@@ -3,3 +3,7 @@ __pycache__/
 .env
 *.env*
 .claude/
+saas.db
+node_modules/
+legacy-python/saas.db
+legacy-python/__pycache__/

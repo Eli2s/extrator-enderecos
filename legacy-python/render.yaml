@@ -1,0 +1,28 @@
+databases:
+  - name: extrator-enderecos-db
+    databaseName: extrator_enderecos
+    user: extrator_enderecos
+
+services:
+  - type: web
+    name: extrator-enderecos
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /healthz
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: extrator-enderecos-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: SESSION_COOKIE_SECURE
+        value: "1"
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      - key: MP_WEBHOOK_SECRET
+        sync: false
