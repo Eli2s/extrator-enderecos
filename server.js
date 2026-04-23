@@ -26,19 +26,24 @@ const html = `<!doctype html>
   <title>Extrator de Enderecos GAN</title>
   <style>
     :root {
-      --bg: #f4efe7;
-      --bg-accent: #efe2c8;
-      --panel: rgba(255,255,255,0.78);
-      --panel-strong: rgba(255,255,255,0.92);
-      --text: #1f1a17;
-      --muted: #6b6158;
-      --line: rgba(67, 46, 23, 0.12);
-      --brand: #be5b2a;
-      --brand-dark: #8f3f18;
-      --green: #1d7a46;
-      --red: #b73737;
-      --shadow: 0 20px 50px rgba(73, 44, 16, 0.12);
-      --radius: 24px;
+      --bg: #08111f;
+      --bg-deep: #050a14;
+      --surface: rgba(10, 18, 33, 0.74);
+      --surface-strong: rgba(12, 22, 39, 0.9);
+      --surface-soft: rgba(255, 255, 255, 0.06);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #edf4ff;
+      --muted: #9db0c8;
+      --brand: #24c8a5;
+      --brand-2: #4f7cff;
+      --brand-3: #f973b0;
+      --green: #38d39f;
+      --red: #ff7b8b;
+      --amber: #ffcd6b;
+      --shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -46,57 +51,162 @@ const html = `<!doctype html>
       font-family: "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(190,91,42,0.16), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(137,91,45,0.16), transparent 26%),
-        linear-gradient(135deg, var(--bg) 0%, #fbf7ef 48%, var(--bg-accent) 100%);
+        radial-gradient(circle at 12% 18%, rgba(79,124,255,0.24), transparent 24%),
+        radial-gradient(circle at 88% 16%, rgba(249,115,176,0.18), transparent 22%),
+        radial-gradient(circle at 82% 80%, rgba(36,200,165,0.16), transparent 22%),
+        linear-gradient(145deg, var(--bg-deep) 0%, var(--bg) 52%, #0a1629 100%);
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: radial-gradient(circle at center, black 38%, transparent 90%);
+      opacity: 0.22;
     }
     .wrap {
-      max-width: 1120px;
+      position: relative;
+      max-width: 1180px;
       margin: 0 auto;
-      padding: 40px 18px 72px;
+      padding: 38px 18px 70px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 22px;
+      flex-wrap: wrap;
+    }
+    .brand-mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .brand-badge {
+      width: 46px;
+      height: 46px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: #04111d;
+      background: linear-gradient(135deg, var(--brand) 0%, #76ffd7 100%);
+      box-shadow: 0 14px 34px rgba(36,200,165,0.3);
+    }
+    .brand-copy strong {
+      display: block;
+      font-size: 1rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .brand-copy span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.88rem;
+      margin-top: 3px;
+    }
+    .topbar-note {
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--muted);
+      font-size: 0.88rem;
     }
     .hero {
       display: grid;
-      grid-template-columns: 1.2fr 0.8fr;
+      grid-template-columns: 1.12fr 0.88fr;
       gap: 18px;
       margin-bottom: 22px;
     }
     .panel {
-      background: var(--panel);
-      backdrop-filter: blur(16px);
+      background: var(--surface);
+      backdrop-filter: blur(20px);
       border: 1px solid var(--line);
-      border-radius: var(--radius);
+      border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
     }
     .hero-main {
-      padding: 32px;
+      position: relative;
+      overflow: hidden;
+      padding: 34px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
+        linear-gradient(160deg, rgba(79,124,255,0.16), rgba(10,18,33,0.18) 42%, rgba(36,200,165,0.08));
+    }
+    .hero-main::after {
+      content: "";
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      border-radius: 999px;
+      right: -60px;
+      top: -60px;
+      background: radial-gradient(circle, rgba(79,124,255,0.26), transparent 68%);
+      pointer-events: none;
     }
     .eyebrow {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 7px 12px;
+      gap: 10px;
+      padding: 8px 13px;
       border-radius: 999px;
-      background: rgba(190, 91, 42, 0.1);
-      color: var(--brand-dark);
-      font-size: 0.84rem;
-      font-weight: 700;
-      letter-spacing: 0.02em;
+      background: rgba(36,200,165,0.12);
+      color: #7ef4d7;
+      border: 1px solid rgba(36,200,165,0.18);
+      font-size: 0.81rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
     }
     h1 {
-      margin-top: 16px;
-      font-size: clamp(2rem, 4vw, 3.4rem);
-      line-height: 0.96;
-      letter-spacing: -0.04em;
-      max-width: 10ch;
+      margin-top: 18px;
+      font-size: clamp(2.3rem, 5vw, 4.4rem);
+      line-height: 0.92;
+      letter-spacing: -0.05em;
+      max-width: 11ch;
+    }
+    h1 .gradient {
+      display: block;
+      background: linear-gradient(90deg, #ffffff 0%, #8fe9ff 44%, #88ffdc 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
     .sub {
-      margin-top: 16px;
+      margin-top: 18px;
       color: var(--muted);
       font-size: 1rem;
-      line-height: 1.6;
+      line-height: 1.65;
       max-width: 58ch;
+    }
+    .hero-cards {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 24px;
+    }
+    .mini-card {
+      min-width: 140px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .mini-card strong {
+      display: block;
+      font-size: 1.1rem;
+      margin-bottom: 4px;
+    }
+    .mini-card span {
+      color: var(--muted);
+      font-size: 0.84rem;
     }
     .hero-side {
       padding: 28px;
@@ -105,56 +215,81 @@ const html = `<!doctype html>
       justify-content: space-between;
       gap: 18px;
       background:
-        linear-gradient(160deg, rgba(190,91,42,0.1), rgba(255,255,255,0.9)),
-        var(--panel-strong);
+        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+        var(--surface-strong);
+    }
+    .hero-side h2 {
+      font-size: 1.06rem;
+      margin-bottom: 14px;
     }
     .meta-list {
       display: grid;
       gap: 12px;
     }
     .meta-item {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
     }
-    .meta-item:last-child { border-bottom: 0; padding-bottom: 0; }
+    .meta-item:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
     .meta-item span:first-child { color: var(--muted); }
     .meta-item strong { text-align: right; }
+    .hero-callout {
+      padding: 16px 18px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, rgba(249,115,176,0.14), rgba(79,124,255,0.16));
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #dbe7ff;
+      line-height: 1.55;
+      font-size: 0.9rem;
+    }
     .app {
       padding: 22px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)),
+        var(--surface);
     }
     .drop {
       display: block;
-      padding: 34px 24px;
-      border: 2px dashed rgba(190, 91, 42, 0.25);
-      border-radius: 20px;
+      position: relative;
+      overflow: hidden;
+      padding: 36px 24px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
       background:
-        linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.56));
+        radial-gradient(circle at top right, rgba(79,124,255,0.22), transparent 28%),
+        radial-gradient(circle at bottom left, rgba(36,200,165,0.16), transparent 24%),
+        linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
       text-align: center;
       cursor: pointer;
-      transition: border-color .2s ease, transform .2s ease, background .2s ease;
+      transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease;
     }
     .drop.hover {
-      border-color: var(--brand);
-      background: rgba(255,255,255,0.96);
-      transform: translateY(-1px);
+      border-color: rgba(36,200,165,0.42);
+      transform: translateY(-2px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.24);
     }
     .drop-icon {
-      width: 68px;
-      height: 68px;
-      margin: 0 auto 14px;
-      border-radius: 18px;
+      width: 78px;
+      height: 78px;
+      margin: 0 auto 16px;
+      border-radius: 24px;
       display: grid;
       place-items: center;
-      background: linear-gradient(145deg, rgba(190,91,42,0.18), rgba(190,91,42,0.06));
-      color: var(--brand-dark);
-      font-size: 1.8rem;
-      font-weight: 700;
+      background: linear-gradient(135deg, rgba(79,124,255,0.28), rgba(36,200,165,0.28));
+      color: white;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.24);
     }
     .drop strong {
-      font-size: 1.12rem;
+      font-size: 1.16rem;
       display: block;
     }
     .drop small {
@@ -164,9 +299,9 @@ const html = `<!doctype html>
       font-size: 0.92rem;
     }
     .file {
-      margin-top: 14px;
-      color: var(--brand-dark);
-      font-size: 0.94rem;
+      margin-top: 16px;
+      color: #9df4de;
+      font-size: 0.95rem;
       font-weight: 700;
       word-break: break-word;
     }
@@ -179,37 +314,46 @@ const html = `<!doctype html>
       margin-top: 18px;
       flex-wrap: wrap;
     }
-    .actions {
+    .actions,
+    .summary {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
     }
     button {
       border: 0;
-      border-radius: 14px;
+      border-radius: 16px;
       padding: 13px 18px;
-      font-weight: 700;
+      font-weight: 800;
       font-size: 0.95rem;
       cursor: pointer;
-      transition: transform .15s ease, opacity .15s ease, background .2s ease;
+      transition: transform .15s ease, opacity .15s ease, box-shadow .2s ease, background .2s ease;
     }
     button:hover:not(:disabled) { transform: translateY(-1px); }
-    button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
-    .primary { background: var(--brand); color: #fff; }
-    .primary:hover:not(:disabled) { background: var(--brand-dark); }
-    .secondary { background: #2e2a27; color: #fff; }
-    .secondary:hover:not(:disabled) { background: #1f1c1a; }
-    .summary {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
+    button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
+    .primary {
+      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
+      color: #04111d;
+      box-shadow: 0 18px 32px rgba(36,200,165,0.2);
+    }
+    .primary:hover:not(:disabled) {
+      background: linear-gradient(135deg, #52f0cb 0%, #79a5ff 100%);
+    }
+    .secondary {
+      background: rgba(255,255,255,0.07);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .secondary:hover:not(:disabled) {
+      background: rgba(255,255,255,0.13);
     }
     .pill {
       border-radius: 999px;
-      padding: 9px 14px;
-      font-size: 0.88rem;
-      background: rgba(31, 26, 23, 0.06);
+      padding: 10px 14px;
+      font-size: 0.87rem;
+      background: rgba(255,255,255,0.07);
       color: var(--muted);
+      border: 1px solid rgba(255,255,255,0.08);
     }
     .status {
       min-height: 24px;
@@ -219,13 +363,15 @@ const html = `<!doctype html>
     }
     .status.error { color: var(--red); }
     .status.ok { color: var(--green); }
-    .status.warn { color: var(--brand-dark); }
+    .status.warn { color: var(--amber); }
     .results {
       margin-top: 22px;
-      border-radius: 20px;
+      border-radius: 24px;
       overflow: hidden;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(255,255,255,0.1);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+        rgba(8,17,31,0.65);
     }
     .results[hidden] { display: none; }
     .results-head {
@@ -233,9 +379,9 @@ const html = `<!doctype html>
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      padding: 16px 18px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255,255,255,0.7);
+      padding: 18px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
     }
     .results-head h2 { font-size: 1rem; }
     .results-head p { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
@@ -243,7 +389,7 @@ const html = `<!doctype html>
     table { width: 100%; border-collapse: collapse; }
     th, td {
       padding: 12px 14px;
-      border-bottom: 1px solid rgba(67,46,23,0.08);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
       text-align: left;
       vertical-align: top;
     }
@@ -251,39 +397,38 @@ const html = `<!doctype html>
       position: sticky;
       top: 0;
       z-index: 1;
-      background: rgba(248, 242, 233, 0.96);
-      color: var(--muted);
-      font-size: 0.82rem;
-      letter-spacing: 0.03em;
+      background: rgba(8,17,31,0.96);
+      color: #8ca3c2;
+      font-size: 0.8rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
+    }
+    tbody tr:hover {
+      background: rgba(255,255,255,0.03);
     }
     td:nth-child(1), td:nth-child(3) { white-space: nowrap; }
     td:nth-child(1) {
       width: 60px;
-      color: var(--muted);
+      color: #7f92ab;
       font-variant-numeric: tabular-nums;
     }
     .bairro-chip {
       display: inline-flex;
-      padding: 5px 10px;
+      padding: 6px 10px;
       border-radius: 999px;
-      background: rgba(29,122,70,0.1);
-      color: #155a34;
-      font-size: 0.84rem;
+      background: rgba(36,200,165,0.14);
+      color: #8af0d5;
+      border: 1px solid rgba(36,200,165,0.14);
+      font-size: 0.83rem;
       font-weight: 700;
     }
     .empty {
+      color: #ffc98e;
+      background: rgba(255, 172, 83, 0.12);
+      border-color: rgba(255, 172, 83, 0.14);
       font-style: italic;
-      color: #97715b;
-      background: rgba(190,91,42,0.08);
     }
-    .footnote {
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 0.86rem;
-      line-height: 1.5;
-    }
-    @media (max-width: 860px) {
+    @media (max-width: 920px) {
       .hero { grid-template-columns: 1fr; }
       .hero-main, .hero-side, .app { padding: 22px; }
       h1 { max-width: none; }
@@ -293,20 +438,39 @@ const html = `<!doctype html>
 </head>
 <body>
   <div class="wrap">
+    <header class="topbar">
+      <div class="brand-mark">
+        <div class="brand-badge">EX</div>
+        <div class="brand-copy">
+          <strong>Extrator GAN</strong>
+          <span>Node edition para publicacao rapida</span>
+        </div>
+      </div>
+      <div class="topbar-note">PDF para TXT e Excel em uma tela so</div>
+    </header>
+
     <section class="hero">
       <div class="panel hero-main">
-        <span class="eyebrow">Port Node em validacao</span>
-        <h1>Extrator de enderecos para PDFs GAN</h1>
-        <p class="sub">Versao focada no parser e na exportacao. Sem login, sem planos e sem pagamento. A meta aqui e validar captura, revisar a qualidade da extracao e deixar a base pronta para publicar em hospedagem Node.</p>
+        <span class="eyebrow">Extracao em foco</span>
+        <h1>Suba o PDF e <span class="gradient">gere sua base</span></h1>
+        <p class="sub">Versao enxuta e pronta para hospedagem Node. O app foi desenhado para ir direto ao ponto: receber a lista GAN, extrair os enderecos e devolver os dados prontos para baixar.</p>
+        <div class="hero-cards">
+          <div class="mini-card"><strong>50 MB</strong><span>Tamanho maximo por arquivo</span></div>
+          <div class="mini-card"><strong>2 saídas</strong><span>Excel e TXT no mesmo fluxo</span></div>
+          <div class="mini-card"><strong>1 tela</strong><span>Interface direta para operacao</span></div>
+        </div>
       </div>
       <aside class="panel hero-side">
-        <div class="meta-list">
-          <div class="meta-item"><span>Entrada</span><strong>PDF ate 50 MB</strong></div>
-          <div class="meta-item"><span>Saida</span><strong>Excel e TXT</strong></div>
-          <div class="meta-item"><span>Modo</span><strong>Maximizar captura</strong></div>
-          <div class="meta-item"><span>Health check</span><strong>/healthz</strong></div>
+        <div>
+          <h2>Painel de status</h2>
+          <div class="meta-list">
+            <div class="meta-item"><span>Entrada</span><strong>PDF GAN</strong></div>
+            <div class="meta-item"><span>Modo atual</span><strong>Captura agressiva</strong></div>
+            <div class="meta-item"><span>Saida</span><strong>Endereco, CEP, Bairro</strong></div>
+            <div class="meta-item"><span>Check</span><strong>/healthz</strong></div>
+          </div>
         </div>
-        <p class="footnote">Se uma linha vier com bairro vazio ou texto deslocado, isso indica limite de leitura do PDF original. Ainda assim, a extracao fica disponivel para revisao e download.</p>
+        <div class="hero-callout">Se alguma linha vier com bairro vazio ou texto estranho, isso tende a refletir a estrutura do PDF original. Ainda assim, o app preserva o resultado para revisao e download.</div>
       </aside>
     </section>
 
@@ -314,7 +478,7 @@ const html = `<!doctype html>
       <label class="drop" id="drop">
         <div class="drop-icon">PDF</div>
         <strong>Arraste o arquivo aqui ou clique para escolher</strong>
-        <small>Ideal para testar listas GAN reais e comparar com a versao Python.</small>
+        <small>Use listas GAN reais para validar a extracao antes de expandir o restante do produto.</small>
         <div class="file" id="fileName"></div>
         <input id="pdf" type="file" accept=".pdf">
       </label>
