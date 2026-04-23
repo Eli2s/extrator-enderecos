@@ -21,664 +21,406 @@ app.use((req, res, next) => {
 const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Extrator de Enderecos GAN</title>
-  <style>
-    :root {
-      --bg: #08111f;
-      --bg-deep: #050a14;
-      --surface: rgba(10, 18, 33, 0.74);
-      --surface-strong: rgba(12, 22, 39, 0.9);
-      --surface-soft: rgba(255, 255, 255, 0.06);
-      --line: rgba(148, 163, 184, 0.18);
-      --text: #edf4ff;
-      --muted: #9db0c8;
-      --brand: #24c8a5;
-      --brand-2: #4f7cff;
-      --brand-3: #f973b0;
-      --green: #38d39f;
-      --red: #ff7b8b;
-      --amber: #ffcd6b;
-      --shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
-      --radius-xl: 28px;
-      --radius-lg: 22px;
-      --radius-md: 16px;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      min-height: 100vh;
-      font-family: "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 12% 18%, rgba(79,124,255,0.24), transparent 24%),
-        radial-gradient(circle at 88% 16%, rgba(249,115,176,0.18), transparent 22%),
-        radial-gradient(circle at 82% 80%, rgba(36,200,165,0.16), transparent 22%),
-        linear-gradient(145deg, var(--bg-deep) 0%, var(--bg) 52%, #0a1629 100%);
-    }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background:
-        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
-      background-size: 44px 44px;
-      mask-image: radial-gradient(circle at center, black 38%, transparent 90%);
-      opacity: 0.22;
-    }
-    .wrap {
-      position: relative;
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 38px 18px 70px;
-    }
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 18px;
-      margin-bottom: 22px;
-      flex-wrap: wrap;
-    }
-    .brand-mark {
-      display: inline-flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .brand-badge {
-      width: 46px;
-      height: 46px;
-      border-radius: 16px;
-      display: grid;
-      place-items: center;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      color: #04111d;
-      background: linear-gradient(135deg, var(--brand) 0%, #76ffd7 100%);
-      box-shadow: 0 14px 34px rgba(36,200,165,0.3);
-    }
-    .brand-copy strong {
-      display: block;
-      font-size: 1rem;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    .brand-copy span {
-      display: block;
-      color: var(--muted);
-      font-size: 0.88rem;
-      margin-top: 3px;
-    }
-    .topbar-note {
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
-      color: var(--muted);
-      font-size: 0.88rem;
-    }
-    .hero {
-      display: grid;
-      grid-template-columns: 1.12fr 0.88fr;
-      gap: 18px;
-      margin-bottom: 22px;
-    }
-    .panel {
-      background: var(--surface);
-      backdrop-filter: blur(20px);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-xl);
-      box-shadow: var(--shadow);
-    }
-    .hero-main {
-      position: relative;
-      overflow: hidden;
-      padding: 34px;
-      background:
-        linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)),
-        linear-gradient(160deg, rgba(79,124,255,0.16), rgba(10,18,33,0.18) 42%, rgba(36,200,165,0.08));
-    }
-    .hero-main::after {
-      content: "";
-      position: absolute;
-      width: 260px;
-      height: 260px;
-      border-radius: 999px;
-      right: -60px;
-      top: -60px;
-      background: radial-gradient(circle, rgba(79,124,255,0.26), transparent 68%);
-      pointer-events: none;
-    }
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 13px;
-      border-radius: 999px;
-      background: rgba(36,200,165,0.12);
-      color: #7ef4d7;
-      border: 1px solid rgba(36,200,165,0.18);
-      font-size: 0.81rem;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-    h1 {
-      margin-top: 18px;
-      font-size: clamp(2.3rem, 5vw, 4.4rem);
-      line-height: 0.92;
-      letter-spacing: -0.05em;
-      max-width: 11ch;
-    }
-    h1 .gradient {
-      display: block;
-      background: linear-gradient(90deg, #ffffff 0%, #8fe9ff 44%, #88ffdc 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-    .sub {
-      margin-top: 18px;
-      color: var(--muted);
-      font-size: 1rem;
-      line-height: 1.65;
-      max-width: 58ch;
-    }
-    .hero-cards {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 24px;
-    }
-    .mini-card {
-      min-width: 140px;
-      padding: 14px 16px;
-      border-radius: 18px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .mini-card strong {
-      display: block;
-      font-size: 1.1rem;
-      margin-bottom: 4px;
-    }
-    .mini-card span {
-      color: var(--muted);
-      font-size: 0.84rem;
-    }
-    .hero-side {
-      padding: 28px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 18px;
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
-        var(--surface-strong);
-    }
-    .hero-side h2 {
-      font-size: 1.06rem;
-      margin-bottom: 14px;
-    }
-    .meta-list {
-      display: grid;
-      gap: 12px;
-    }
-    .meta-item {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px 16px;
-      padding: 12px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .meta-item:last-child {
-      border-bottom: 0;
-      padding-bottom: 0;
-    }
-    .meta-item span:first-child { color: var(--muted); }
-    .meta-item strong { text-align: right; }
-    .hero-callout {
-      padding: 16px 18px;
-      border-radius: 18px;
-      background: linear-gradient(135deg, rgba(249,115,176,0.14), rgba(79,124,255,0.16));
-      border: 1px solid rgba(255,255,255,0.1);
-      color: #dbe7ff;
-      line-height: 1.55;
-      font-size: 0.9rem;
-    }
-    .app {
-      padding: 22px;
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)),
-        var(--surface);
-    }
-    .drop {
-      display: block;
-      position: relative;
-      overflow: hidden;
-      padding: 36px 24px;
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 24px;
-      background:
-        radial-gradient(circle at top right, rgba(79,124,255,0.22), transparent 28%),
-        radial-gradient(circle at bottom left, rgba(36,200,165,0.16), transparent 24%),
-        linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
-      text-align: center;
-      cursor: pointer;
-      transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease;
-    }
-    .drop.hover {
-      border-color: rgba(36,200,165,0.42);
-      transform: translateY(-2px);
-      box-shadow: 0 20px 40px rgba(0,0,0,0.24);
-    }
-    .drop-icon {
-      width: 78px;
-      height: 78px;
-      margin: 0 auto 16px;
-      border-radius: 24px;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(135deg, rgba(79,124,255,0.28), rgba(36,200,165,0.28));
-      color: white;
-      font-size: 1.35rem;
-      font-weight: 800;
-      letter-spacing: 0.05em;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.24);
-    }
-    .drop strong {
-      font-size: 1.16rem;
-      display: block;
-    }
-    .drop small {
-      display: block;
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 0.92rem;
-    }
-    .file {
-      margin-top: 16px;
-      color: #9df4de;
-      font-size: 0.95rem;
-      font-weight: 700;
-      word-break: break-word;
-    }
-    input[type=file] { display: none; }
-    .toolbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 14px;
-      margin-top: 18px;
-      flex-wrap: wrap;
-    }
-    .actions,
-    .summary {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-    button {
-      border: 0;
-      border-radius: 16px;
-      padding: 13px 18px;
-      font-weight: 800;
-      font-size: 0.95rem;
-      cursor: pointer;
-      transition: transform .15s ease, opacity .15s ease, box-shadow .2s ease, background .2s ease;
-    }
-    button:hover:not(:disabled) { transform: translateY(-1px); }
-    button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
-    .primary {
-      background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
-      color: #04111d;
-      box-shadow: 0 18px 32px rgba(36,200,165,0.2);
-    }
-    .primary:hover:not(:disabled) {
-      background: linear-gradient(135deg, #52f0cb 0%, #79a5ff 100%);
-    }
-    .secondary {
-      background: rgba(255,255,255,0.07);
-      color: var(--text);
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .secondary:hover:not(:disabled) {
-      background: rgba(255,255,255,0.13);
-    }
-    .pill {
-      border-radius: 999px;
-      padding: 10px 14px;
-      font-size: 0.87rem;
-      background: rgba(255,255,255,0.07);
-      color: var(--muted);
-      border: 1px solid rgba(255,255,255,0.08);
-    }
-    .status {
-      min-height: 24px;
-      margin-top: 14px;
-      font-size: 0.95rem;
-      color: var(--muted);
-    }
-    .status.error { color: var(--red); }
-    .status.ok { color: var(--green); }
-    .status.warn { color: var(--amber); }
-    .results {
-      margin-top: 22px;
-      border-radius: 24px;
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.1);
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
-        rgba(8,17,31,0.65);
-    }
-    .results[hidden] { display: none; }
-    .results-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      padding: 18px 20px;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.03);
-    }
-    .results-head h2 { font-size: 1rem; }
-    .results-head p { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
-    .table-wrap { overflow: auto; max-height: 62vh; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td {
-      padding: 12px 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: rgba(8,17,31,0.96);
-      color: #8ca3c2;
-      font-size: 0.8rem;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-    tbody tr:hover {
-      background: rgba(255,255,255,0.03);
-    }
-    td:nth-child(1), td:nth-child(3) { white-space: nowrap; }
-    td:nth-child(1) {
-      width: 60px;
-      color: #7f92ab;
-      font-variant-numeric: tabular-nums;
-    }
-    .bairro-chip {
-      display: inline-flex;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: rgba(36,200,165,0.14);
-      color: #8af0d5;
-      border: 1px solid rgba(36,200,165,0.14);
-      font-size: 0.83rem;
-      font-weight: 700;
-    }
-    .empty {
-      color: #ffc98e;
-      background: rgba(255, 172, 83, 0.12);
-      border-color: rgba(255, 172, 83, 0.14);
-      font-style: italic;
-    }
-    @media (max-width: 920px) {
-      .hero { grid-template-columns: 1fr; }
-      .hero-main, .hero-side, .app { padding: 22px; }
-      h1 { max-width: none; }
-      .results-head { align-items: flex-start; flex-direction: column; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Extrator GAN</title>
+<style>
+  :root {
+    --bg:       #09090b;
+    --s1:       #111113;
+    --s2:       #18181b;
+    --border:   #27272a;
+    --bh:       #3f3f46;
+    --t1:       #fafafa;
+    --t2:       #a1a1aa;
+    --t3:       #52525b;
+    --rose:     #ffffff;
+    --pink:     #d4d4d4;
+    --accent:   #dc2626;
+    --green:    #22c55e;
+    --red:      #ef4444;
+    --amber:    #f59e0b;
+    --r:        10px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0 }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--t1);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.5;
+  }
+
+  /* topbar */
+  .topbar {
+    height: 52px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: -0.01em;
+  }
+  .logo-mark {
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: var(--accent);
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 800; color: #fff;
+    flex-shrink: 0;
+  }
+  .topbar-sep { flex: 1 }
+  .topbar-link {
+    font-size: 13px; color: var(--t3); padding: 5px 10px;
+    border-radius: var(--r); cursor: pointer; background: none; border: none;
+    transition: color .15s, background .15s;
+  }
+  .topbar-link:hover { color: var(--t1); background: var(--s2) }
+  .topbar-cta {
+    font-size: 13px; font-weight: 600; padding: 6px 14px;
+    border-radius: var(--r); border: none; cursor: pointer;
+    background: var(--accent);
+    color: #fff; transition: opacity .15s;
+  }
+  .topbar-cta:hover { opacity: .85 }
+
+  /* layout */
+  .page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 56px 20px 80px;
+    gap: 40px;
+  }
+
+  /* hero */
+  .hero { text-align: center; max-width: 520px }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px;
+    background: rgba(220,38,38,.1); border: 1px solid rgba(220,38,38,.3);
+    color: #fca5a5; font-size: 12px; font-weight: 700;
+    letter-spacing: .05em; text-transform: uppercase; margin-bottom: 18px;
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 800; letter-spacing: -.04em;
+    line-height: 1.05; margin-bottom: 14px;
+  }
+  .gr {
+    background: linear-gradient(135deg, #ffffff 0%, #d4d4d4 50%, #a3a3a3 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p { font-size: 15px; color: var(--t2); line-height: 1.65 }
+
+  /* upload card */
+  .card {
+    width: 100%; max-width: 560px;
+    background: var(--s1); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden;
+    border-top: 2px solid var(--accent);
+  }
+  .drop-zone {
+    display: block; padding: 40px 28px;
+    text-align: center; cursor: pointer;
+    transition: background .15s; position: relative;
+  }
+  .drop-zone:hover, .drop-zone.over { background: var(--s2) }
+  .drop-icon {
+    width: 52px; height: 52px; margin: 0 auto 16px;
+    border-radius: 12px; border: 1px solid var(--bh);
+    display: grid; place-items: center; background: var(--s2);
+  }
+  .drop-icon svg { width: 22px; height: 22px; stroke: var(--t2) }
+  .drop-zone b { display: block; font-size: 15px; font-weight: 600; margin-bottom: 4px }
+  .drop-zone small { font-size: 13px; color: var(--t3) }
+  .file-name {
+    margin-top: 12px; font-size: 13px; font-weight: 600; color: #fca5a5;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  input[type=file] { display: none }
+  .card-actions {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .spacer { flex: 1 }
+
+  /* buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-radius: var(--r); border: none;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: all .15s;
+  }
+  .btn:disabled { opacity: .35; cursor: not-allowed }
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) { opacity: .88; transform: translateY(-1px) }
+  .btn-outline {
+    background: transparent; color: var(--t2);
+    border: 1px solid var(--border);
+  }
+  .btn-outline:hover:not(:disabled) {
+    background: var(--s2); color: var(--t1); border-color: var(--bh);
+    transform: translateY(-1px);
+  }
+
+  /* status */
+  .status {
+    width: 100%; max-width: 560px;
+    display: flex; align-items: center; gap: 8px;
+    min-height: 28px; font-size: 13px; color: var(--t3);
+    padding: 0 4px;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--t3); flex-shrink: 0;
+  }
+  .dot.ok    { background: var(--green) }
+  .dot.error { background: var(--red) }
+  .dot.busy  { background: var(--amber); animation: blink .9s infinite }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+  .status.ok    { color: var(--green) }
+  .status.error { color: var(--red) }
+
+  /* results */
+  .results { width: 100%; max-width: 860px }
+  .results-top {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .results-top h2 { font-size: 14px; font-weight: 700 }
+  .count {
+    padding: 2px 9px; border-radius: 999px;
+    background: rgba(220,38,38,.1); color: #fca5a5;
+    font-size: 12px; font-weight: 700; border: 1px solid rgba(220,38,38,.2);
+  }
+  .dl-row { margin-left: auto; display: flex; gap: 6px }
+  .tbl-wrap {
+    border: 1px solid var(--border); border-radius: 12px;
+    overflow: hidden;
+  }
+  .tbl-inner { overflow: auto; max-height: 65vh }
+  table { width: 100%; border-collapse: collapse; font-size: 13px }
+  thead th {
+    padding: 10px 14px; text-align: left;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: .07em; text-transform: uppercase;
+    color: var(--t3); background: var(--s1);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 1;
+  }
+  tbody td {
+    padding: 11px 14px; border-bottom: 1px solid var(--border);
+    color: var(--t2); vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none }
+  tbody tr:hover td { background: rgba(255,255,255,.02) }
+  td:first-child { width: 52px; color: var(--t3); font-variant-numeric: tabular-nums }
+  td:nth-child(2) { color: var(--t1) }
+  td:nth-child(3) { font-family: ui-monospace, monospace }
+  .chip {
+    display: inline-block; padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: rgba(34,197,94,.1); color: #86efac; border: 1px solid rgba(34,197,94,.12);
+  }
+  .chip.empty { background: rgba(113,113,122,.1); color: var(--t3); border-color: transparent; font-style: italic }
+
+  /* footer */
+  footer {
+    border-top: 1px solid var(--border); padding: 20px 24px;
+    text-align: center; font-size: 12px; color: var(--t3);
+  }
+  footer a { color: var(--t3) }
+  footer a:hover { color: var(--t2) }
+
+  @media (max-width: 600px) {
+    .page { padding: 32px 12px 60px }
+    .card, .status, .results { max-width: 100% }
+  }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <header class="topbar">
-      <div class="brand-mark">
-        <div class="brand-badge">EX</div>
-        <div class="brand-copy">
-          <strong>Extrator GAN</strong>
-          <span>Node edition para publicacao rapida</span>
-        </div>
-      </div>
-      <div class="topbar-note">PDF para TXT e Excel em uma tela so</div>
-    </header>
-
-    <section class="hero">
-      <div class="panel hero-main">
-        <span class="eyebrow">Extracao em foco</span>
-        <h1>Suba o PDF e <span class="gradient">gere sua base</span></h1>
-        <p class="sub">Versao enxuta e pronta para hospedagem Node. O app foi desenhado para ir direto ao ponto: receber a lista GAN, extrair os enderecos e devolver os dados prontos para baixar.</p>
-        <div class="hero-cards">
-          <div class="mini-card"><strong>50 MB</strong><span>Tamanho maximo por arquivo</span></div>
-          <div class="mini-card"><strong>2 saídas</strong><span>Excel e TXT no mesmo fluxo</span></div>
-          <div class="mini-card"><strong>1 tela</strong><span>Interface direta para operacao</span></div>
-        </div>
-      </div>
-      <aside class="panel hero-side">
-        <div>
-          <h2>Painel de status</h2>
-          <div class="meta-list">
-            <div class="meta-item"><span>Entrada</span><strong>PDF GAN</strong></div>
-            <div class="meta-item"><span>Modo atual</span><strong>Captura agressiva</strong></div>
-            <div class="meta-item"><span>Saida</span><strong>Endereco, CEP, Bairro</strong></div>
-            <div class="meta-item"><span>Check</span><strong>/healthz</strong></div>
-          </div>
-        </div>
-        <div class="hero-callout">Se alguma linha vier com bairro vazio ou texto estranho, isso tende a refletir a estrutura do PDF original. Ainda assim, o app preserva o resultado para revisao e download.</div>
-      </aside>
-    </section>
-
-    <section class="panel app">
-      <label class="drop" id="drop">
-        <div class="drop-icon">PDF</div>
-        <strong>Arraste o arquivo aqui ou clique para escolher</strong>
-        <small>Use listas GAN reais para validar a extracao antes de expandir o restante do produto.</small>
-        <div class="file" id="fileName"></div>
-        <input id="pdf" type="file" accept=".pdf">
-      </label>
-
-      <div class="toolbar">
-        <div class="actions">
-          <button id="extractBtn" class="primary" disabled>Extrair agora</button>
-          <button id="xlsxBtn" class="secondary" disabled>Baixar XLSX</button>
-          <button id="txtBtn" class="secondary" disabled>Baixar TXT</button>
-        </div>
-        <div class="summary">
-          <span class="pill" id="countPill">0 enderecos</span>
-          <span class="pill" id="qualityPill">Aguardando arquivo</span>
-        </div>
-      </div>
-
-      <div class="status" id="status"></div>
-
-      <div class="results" id="results" hidden>
-        <div class="results-head">
-          <div>
-            <h2>Resultado da extracao</h2>
-            <p id="resultsMeta">Nenhum resultado carregado.</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr><th>#</th><th>Endereco</th><th>CEP</th><th>Bairro</th></tr>
-            </thead>
-            <tbody id="tbody"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
+<div class="topbar">
+  <div class="logo"><div class="logo-mark">EG</div>Extrator GAN</div>
+  <div class="topbar-sep"></div>
+  <button class="topbar-link">Planos</button>
+  <button class="topbar-cta">Entrar</button>
+</div>
+<div class="page">
+  <div class="hero">
+    <div class="pill">&#x2736; Extrator de endere&#xE7;os</div>
+    <h1>Transforme PDFs em<br><span class="gr">dados prontos</span></h1>
+    <p>Fa&#xE7;a upload da lista GAN e exporte os endere&#xE7;os em Excel ou TXT em segundos.</p>
   </div>
+  <div class="card">
+    <label class="drop-zone" id="drop">
+      <div class="drop-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      </div>
+      <b>Arraste o PDF aqui ou clique para escolher</b>
+      <small>Listas GAN &middot; m&#xE1;ximo 50 MB</small>
+      <div class="file-name" id="fileName"></div>
+      <input id="pdf" type="file" accept=".pdf">
+    </label>
+    <div class="card-actions">
+      <button id="extractBtn" class="btn btn-primary" disabled>Extrair endere&#xE7;os</button>
+      <div class="spacer"></div>
+      <button id="dlXlsx" class="btn btn-outline" disabled>&#x2193; Excel</button>
+      <button id="dlTxt" class="btn btn-outline" disabled>&#x2193; TXT</button>
+    </div>
+  </div>
+  <div class="status" id="status">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">Aguardando arquivo</span>
+  </div>
+  <div class="results" id="results" hidden>
+    <div class="results-top">
+      <h2>Endere&#xE7;os extra&#xED;dos</h2>
+      <span class="count" id="count">0</span>
+      <div class="dl-row">
+        <button id="dlXlsx2" class="btn btn-outline">&#x2193; Excel</button>
+        <button id="dlTxt2" class="btn btn-outline">&#x2193; TXT</button>
+      </div>
+    </div>
+    <div class="tbl-wrap"><div class="tbl-inner">
+      <table>
+        <thead><tr><th>#</th><th>Endere&#xE7;o</th><th>CEP</th><th>Bairro</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div></div>
+  </div>
+</div>
+<footer>Extrator GAN &middot; Elias Samuel &middot; <a href="https://github.com/Eli2s">github.com/Eli2s</a></footer>
+<script>
+  let file = null, result = null, baseName = "enderecos";
+  const drop       = document.getElementById("drop");
+  const input      = document.getElementById("pdf");
+  const fileName   = document.getElementById("fileName");
+  const status     = document.getElementById("status");
+  const dot        = document.getElementById("dot");
+  const statusText = document.getElementById("statusText");
+  const extractBtn = document.getElementById("extractBtn");
+  const dlXlsx     = document.getElementById("dlXlsx");
+  const dlTxt      = document.getElementById("dlTxt");
+  const dlXlsx2    = document.getElementById("dlXlsx2");
+  const dlTxt2     = document.getElementById("dlTxt2");
+  const results    = document.getElementById("results");
+  const tbody      = document.getElementById("tbody");
+  const count      = document.getElementById("count");
 
-  <script>
-    let file = null;
-    let result = null;
-    let baseName = "enderecos";
+  function setStatus(msg, tone) {
+    statusText.textContent = msg;
+    dot.className    = "dot"    + (tone ? " " + tone : "");
+    status.className = "status" + (tone ? " " + tone : "");
+  }
 
-    const drop = document.getElementById("drop");
-    const input = document.getElementById("pdf");
-    const fileName = document.getElementById("fileName");
-    const status = document.getElementById("status");
-    const extractBtn = document.getElementById("extractBtn");
-    const xlsxBtn = document.getElementById("xlsxBtn");
-    const txtBtn = document.getElementById("txtBtn");
-    const results = document.getElementById("results");
-    const tbody = document.getElementById("tbody");
-    const countPill = document.getElementById("countPill");
-    const qualityPill = document.getElementById("qualityPill");
-    const resultsMeta = document.getElementById("resultsMeta");
+  function setBusy(busy) {
+    extractBtn.disabled = !file || busy;
+    const noResult = !result || busy;
+    dlXlsx.disabled = noResult; dlTxt.disabled = noResult;
+    dlXlsx2.disabled = noResult; dlTxt2.disabled = noResult;
+  }
 
-    function setStatus(message, tone) {
-      status.className = "status" + (tone ? " " + tone : "");
-      status.textContent = message;
-    }
+  function setFile(f) {
+    file = f;
+    baseName = f.name.replace(/\\.pdf$/i, "") || "enderecos";
+    fileName.textContent = f.name;
+    result = null;
+    results.hidden = true;
+    tbody.replaceChildren();
+    count.textContent = "0";
+    setStatus("Arquivo selecionado — clique em Extrair", "");
+    setBusy(false);
+  }
 
-    function setBusyState(isBusy) {
-      extractBtn.disabled = !file || isBusy;
-      xlsxBtn.disabled = !result || isBusy;
-      txtBtn.disabled = !result || isBusy;
-    }
-
-    function setFile(nextFile) {
-      file = nextFile;
-      baseName = nextFile.name.replace(/\\.pdf$/i, "") || "enderecos";
-      fileName.textContent = nextFile.name;
-      result = null;
-      results.hidden = true;
-      tbody.replaceChildren();
-      countPill.textContent = "0 enderecos";
-      qualityPill.textContent = "Pronto para extrair";
-      resultsMeta.textContent = "Nenhum resultado carregado.";
-      setStatus("");
-      setBusyState(false);
-    }
-
-    function renderRows(items) {
-      const fragment = document.createDocumentFragment();
-      for (const [index, item] of items.entries()) {
-        const tr = document.createElement("tr");
-        const columns = [
-          String(index + 1),
-          item.endereco || "",
-          item.cep || "",
-          item.bairro || ""
-        ];
-
-        columns.forEach((value, columnIndex) => {
-          const td = document.createElement("td");
-          if (columnIndex === 3) {
-            const span = document.createElement("span");
-            span.className = "bairro-chip" + (!value ? " empty" : "");
-            span.textContent = value || "Bairro vazio";
-            td.appendChild(span);
-          } else {
-            td.textContent = value;
-          }
-          tr.appendChild(td);
-        });
-
-        fragment.appendChild(tr);
-      }
-
-      tbody.replaceChildren(fragment);
-    }
-
-    function setSummary(items) {
-      const emptyBairros = items.filter((item) => !item.bairro).length;
-      countPill.textContent = items.length + " enderecos";
-      qualityPill.textContent = emptyBairros === 0
-        ? "Sem bairros vazios"
-        : emptyBairros + " com bairro vazio";
-      resultsMeta.textContent = emptyBairros === 0
-        ? "Extracao concluida e pronta para download."
-        : "Extracao concluida. Revise principalmente as linhas com bairro vazio.";
-    }
-
-    input.addEventListener("change", () => {
-      if (input.files[0]) {
-        setFile(input.files[0]);
-      }
+  function renderRows(items) {
+    const frag = document.createDocumentFragment();
+    items.forEach((item, i) => {
+      const tr = document.createElement("tr");
+      [String(i + 1), item.endereco || "", item.cep || "", item.bairro || ""].forEach((val, ci) => {
+        const td = document.createElement("td");
+        if (ci === 3) {
+          const span = document.createElement("span");
+          span.className = "chip" + (!val ? " empty" : "");
+          span.textContent = val || "—";
+          td.appendChild(span);
+        } else { td.textContent = val; }
+        tr.appendChild(td);
+      });
+      frag.appendChild(tr);
     });
+    tbody.replaceChildren(frag);
+  }
 
-    drop.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      drop.classList.add("hover");
-    });
+  input.addEventListener("change", () => { if (input.files[0]) setFile(input.files[0]); });
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", e => {
+    e.preventDefault(); drop.classList.remove("over");
+    const f = e.dataTransfer.files[0];
+    if (f && f.name.toLowerCase().endsWith(".pdf")) setFile(f);
+  });
 
-    drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
-    drop.addEventListener("drop", (event) => {
-      event.preventDefault();
-      drop.classList.remove("hover");
-      const dropped = event.dataTransfer.files[0];
-      if (dropped && dropped.name.toLowerCase().endsWith(".pdf")) {
-        setFile(dropped);
-      }
-    });
+  extractBtn.addEventListener("click", async () => {
+    if (!file) return;
+    setBusy(true);
+    setStatus("Processando PDF…", "busy");
+    const form = new FormData();
+    form.append("pdf", file);
+    try {
+      const res = await fetch("/extrair", { method: "POST", body: form });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.erro);
+      result = data.enderecos;
+      renderRows(result);
+      count.textContent = String(result.length);
+      results.hidden = false;
+      setStatus("Extração concluída · " + result.length + " endereços", "ok");
+    } catch (e) {
+      setStatus("Erro: " + e.message, "error");
+    } finally { setBusy(false); }
+  });
 
-    extractBtn.addEventListener("click", async () => {
-      if (!file) return;
+  async function download(fmt) {
+    if (!result) return;
+    setBusy(true);
+    setStatus("Gerando " + fmt.toUpperCase() + "…", "busy");
+    try {
+      const res = await fetch("/baixar/" + fmt, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enderecos: result, nome: baseName })
+      });
+      if (!res.ok) throw new Error("Falha ao gerar download.");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = baseName + (fmt === "xlsx" ? ".xlsx" : ".txt");
+      a.click(); URL.revokeObjectURL(url);
+      setStatus("Download pronto.", "ok");
+    } catch (e) {
+      setStatus("Erro: " + e.message, "error");
+    } finally { setBusy(false); }
+  }
 
-      setBusyState(true);
-      setStatus("Processando PDF...", "warn");
-      const form = new FormData();
-      form.append("pdf", file);
-
-      try {
-        const response = await fetch("/extrair", { method: "POST", body: form });
-        const data = await response.json();
-        if (!data.ok) throw new Error(data.erro);
-
-        result = data.enderecos;
-        renderRows(result);
-        setSummary(result);
-        results.hidden = false;
-        setStatus("Extracao concluida com sucesso.", "ok");
-      } catch (error) {
-        setStatus("Erro: " + error.message, "error");
-      } finally {
-        setBusyState(false);
-      }
-    });
-
-    async function download(format) {
-      if (!result) return;
-
-      setBusyState(true);
-      setStatus("Gerando arquivo " + format.toUpperCase() + "...", "warn");
-      try {
-        const response = await fetch("/baixar/" + format, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enderecos: result, nome: baseName })
-        });
-        if (!response.ok) {
-          throw new Error("Falha ao gerar download.");
-        }
-
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = baseName + (format === "xlsx" ? ".xlsx" : ".txt");
-        anchor.click();
-        URL.revokeObjectURL(url);
-        setStatus("Download pronto.", "ok");
-      } catch (error) {
-        setStatus("Erro: " + error.message, "error");
-      } finally {
-        setBusyState(false);
-      }
-    }
-
-    xlsxBtn.addEventListener("click", () => download("xlsx"));
-    txtBtn.addEventListener("click", () => download("txt"));
-  </script>
+  dlXlsx.addEventListener("click",  () => download("xlsx"));
+  dlXlsx2.addEventListener("click", () => download("xlsx"));
+  dlTxt.addEventListener("click",   () => download("txt"));
+  dlTxt2.addEventListener("click",  () => download("txt"));
+</script>
 </body>
 </html>`;
 
