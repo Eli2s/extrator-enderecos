@@ -1,24 +1,12 @@
 import writeXlsxFile from "write-excel-file/node";
 
-export async function generateXlsxBuffer(addresses) {
-  const header = [
-    { value: "ENDERECO", fontWeight: "bold" },
-    { value: "CEP",      fontWeight: "bold" },
-    { value: "BAIRRO",   fontWeight: "bold" }
-  ];
-
+export async function generateXlsxBuffer(colunas, linhas) {
+  const header = colunas.map(col => ({ value: col, fontWeight: "bold" }));
   const rows = [
     header,
-    ...addresses.map((item) => [
-      { value: item.endereco || "" },
-      { value: item.cep      || "" },
-      { value: item.bairro   || "" }
-    ])
+    ...linhas.map(row => row.map(cell => ({ value: String(cell ?? "") })))
   ];
 
-  const result = writeXlsxFile(rows, {
-    sheet: "Enderecos",
-    fontFamily: "Calibri"
-  });
+  const result = writeXlsxFile(rows, { sheet: "Enderecos", fontFamily: "Calibri" });
   return result.toBuffer ? result.toBuffer() : result;
 }

@@ -163,7 +163,8 @@ export async function extractAddressesFromPdfBuffer(buffer) {
   return addresses;
 }
 
-export function generateTxtBuffer(addresses) {
-  const lines = addresses.map((item) => `${item.endereco}, ${item.cep}, ${item.bairro}`);
-  return Buffer.from(lines.join("\n"), "utf8");
+export function generateTxtBuffer(colunas, linhas) {
+  const header = colunas.join("\t");
+  const rows   = linhas.map(row => row.map(c => String(c ?? "")).join("\t"));
+  return Buffer.from([header, ...rows].join("\n"), "utf8");
 }

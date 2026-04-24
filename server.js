@@ -150,6 +150,18 @@ const html = `<!doctype html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   input[type=file] { display: none }
+  .fields-bar {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .fields-label { font-size: 11px; color: var(--t3); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; flex-shrink: 0 }
+  .field-toggle {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 12px; color: var(--t2); cursor: pointer; user-select: none;
+  }
+  .field-toggle input[type=checkbox] { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer }
+  .field-toggle:has(input:checked) { color: var(--t1) }
+
   .card-actions {
     padding: 12px 16px; border-top: 1px solid var(--border);
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -275,6 +287,13 @@ const html = `<!doctype html>
       <div class="file-name" id="fileName"></div>
       <input id="pdf" type="file" accept=".pdf">
     </label>
+    <div class="fields-bar">
+      <span class="fields-label">Campos:</span>
+      <label class="field-toggle"><input type="checkbox" id="fEndereco" checked><span>Endere&#xE7;o</span></label>
+      <label class="field-toggle"><input type="checkbox" id="fNumero"><span>N&#xBA; separado</span></label>
+      <label class="field-toggle"><input type="checkbox" id="fBairro" checked><span>Bairro</span></label>
+      <label class="field-toggle"><input type="checkbox" id="fCep" checked><span>CEP</span></label>
+    </div>
     <div class="card-actions">
       <button id="extractBtn" class="btn btn-primary" disabled>Extrair endere&#xE7;os</button>
       <div class="spacer"></div>
@@ -306,6 +325,26 @@ const html = `<!doctype html>
 <footer>Extrator GAN &middot; Elias Samuel &middot; <a href="https://github.com/Eli2s">github.com/Eli2s</a></footer>
 <script>
   let file = null, result = null, baseName = "enderecos";
+
+  function splitAddr(full) {
+    const m = full.match(/^(.+?),?\s+(\d[\w\s\-.\/]*)$/);
+    return m ? { logradouro: m[1].trim(), numero: m[2].trim() } : { logradouro: full, numero: "" };
+  }
+
+  function buildCols() {
+    const fEnd = document.getElementById("fEndereco").checked;
+    const fNum = document.getElementById("fNumero").checked;
+    const fBai = document.getElementById("fBairro").checked;
+    const fCep = document.getElementById("fCep").checked;
+    const cols = [];
+    if (fEnd && !fNum) cols.push({ label: "ENDEREÇO",   get: r => r.endereco });
+    if (fEnd &&  fNum) cols.push({ label: "LOGRADOURO", get: r => splitAddr(r.endereco).logradouro });
+    if (fNum)          cols.push({ label: "NÚMERO",     get: r => splitAddr(r.endereco).numero });
+    if (fBai)          cols.push({ label: "BAIRRO",     get: r => r.bairro });
+    if (fCep)          cols.push({ label: "CEP",        get: r => r.cep });
+    return cols;
+  }
+
   const drop       = document.getElementById("drop");
   const input      = document.getElementById("pdf");
   const fileName   = document.getElementById("fileName");
@@ -399,10 +438,13 @@ const html = `<!doctype html>
     setBusy(true);
     setStatus("Gerando " + fmt.toUpperCase() + "…", "busy");
     try {
+      const cols = buildCols();
+      const colunas = cols.map(c => c.label);
+      const linhas  = result.map(r => cols.map(c => c.get(r)));
       const res = await fetch("/baixar/" + fmt, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enderecos: result, nome: baseName })
+        body: JSON.stringify({ colunas, linhas, nome: baseName })
       });
       if (!res.ok) throw new Error("Falha ao gerar download.");
       const blob = await res.blob();
@@ -470,22 +512,23 @@ app.post("/extrair", upload.single("pdf"), async (req, res) => {
 
 app.post("/baixar/:format", async (req, res) => {
   try {
-    const addresses = Array.isArray(req.body?.enderecos) ? req.body.enderecos : [];
-    const name = sanitizeDownloadName(req.body?.nome);
+    const colunas = Array.isArray(req.body?.colunas) ? req.body.colunas : ["ENDEREÇO", "BAIRRO", "CEP"];
+    const linhas  = Array.isArray(req.body?.linhas)  ? req.body.linhas  : [];
+    const name    = sanitizeDownloadName(req.body?.nome);
 
-    if (!addresses.length) {
-      return res.status(400).json({ ok: false, erro: "Nenhum endereco informado para download." });
+    if (!linhas.length) {
+      return res.status(400).json({ ok: false, erro: "Nenhum dado informado para download." });
     }
 
     if (req.params.format === "xlsx") {
-      const buffer = await generateXlsxBuffer(addresses);
+      const buffer = await generateXlsxBuffer(colunas, linhas);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${name}.xlsx"`);
       return res.send(buffer);
     }
 
     if (req.params.format === "txt") {
-      const buffer = generateTxtBuffer(addresses);
+      const buffer = generateTxtBuffer(colunas, linhas);
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="${name}.txt"`);
       return res.send(buffer);
