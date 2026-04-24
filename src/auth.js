@@ -13,14 +13,16 @@ export async function verifyPassword(plain, hash) {
 
 export async function createUser(email, plainPassword, name = "") {
   const hash = await hashPassword(plainPassword);
-  const db = getDb();
+  const db = await getDb();
+
   try {
-    const result = db.prepare(
-      "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)"
-    ).run(email.toLowerCase().trim(), hash, name.trim());
-    return getUserById(result.lastInsertRowid);
+    const [result] = await db.query(
+      "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)",
+      [email.toLowerCase().trim(), hash, name.trim()]
+    );
+    return getUserById(result.insertId);
   } catch (err) {
-    if (err.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (err.code === "ER_DUP_ENTRY") {
       throw Object.assign(new Error("E-mail já cadastrado."), { status: 409 });
     }
     throw err;
@@ -28,10 +30,12 @@ export async function createUser(email, plainPassword, name = "") {
 }
 
 export async function loginUser(email, plainPassword) {
-  const db = getDb();
-  const user = db.prepare(
-    "SELECT * FROM users WHERE email = ?"
-  ).get(email.toLowerCase().trim());
+  const db = await getDb();
+  const [rows] = await db.query(
+    "SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1",
+    [email.toLowerCase().trim()]
+  );
+  const user = rows[0];
 
   if (!user) throw Object.assign(new Error("Credenciais inválidas."), { status: 401 });
 
@@ -41,8 +45,13 @@ export async function loginUser(email, plainPassword) {
   return safeUser(user);
 }
 
-export function getUserById(id) {
-  const user = getDb().prepare("SELECT * FROM users WHERE id = ?").get(id);
+export async function getUserById(id) {
+  const db = await getDb();
+  const [rows] = await db.query(
+    "SELECT * FROM users WHERE id = ? LIMIT 1",
+    [id]
+  );
+  const user = rows[0];
   return user ? safeUser(user) : null;
 }
 
@@ -58,5 +67,5 @@ export function requireAuth(req, res, next) {
 }
 
 export function requirePlan(req, res, next) {
-  next(); // actual credit check happens inside /extrair with user-friendly messaging
+  next();
 }

@@ -10,7 +10,6 @@ import {
   getPlans,
   getPlanById,
   getActiveSubscription,
-  activateSubscription,
   consumeCredit,
   logUsage,
   getUsageLogs,
@@ -20,7 +19,7 @@ import {
 import { createUser, loginUser, getUserById, requireAuth } from "./src/auth.js";
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
-getDb(); // initialize DB on startup
+await getDb();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -41,17 +40,20 @@ app.use((req, res, next) => {
 });
 
 // Attach user to every request
-app.use((req, res, next) => {
-  if (req.session?.userId) {
-    req.user = getUserById(req.session.userId) || null;
-    if (!req.user) delete req.session.userId;
+app.use(async (req, res, next) => {
+  try {
+    if (req.session?.userId) {
+      req.user = await getUserById(req.session.userId);
+      if (!req.user) delete req.session.userId;
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 // Mercado Pago
 const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
-const MP_PUBLIC_KEY = process.env.MP_PUBLIC_KEY;
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 const mpClient = MP_TOKEN ? new MercadoPagoConfig({ accessToken: MP_TOKEN }) : null;
 
@@ -661,15 +663,20 @@ function sanitizeDownloadName(name) {
     .replace(/^_+|_+$/g, "") || "enderecos";
 }
 
-// ── Routes ─────────────────────────────────────────────────────────────────────
-app.get("/healthz", (req, res) => {
-  res.json({ ok: true, runtime: "node", service: "extrator-enderecos-saas" });
-});
+function asyncHandler(fn) {
+  return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+}
 
-app.get("/", (req, res) => {
+// ── Routes ─────────────────────────────────────────────────────────────────────
+app.get("/healthz", asyncHandler(async (req, res) => {
+  await getDb();
+  res.json({ ok: true, runtime: "node", service: "extrator-enderecos-saas", database: "mysql" });
+}));
+
+app.get("/", asyncHandler(async (req, res) => {
   const user = req.user;
   if (!user) return res.type("html").send(landingHtml(null, null));
-  const sub = getActiveSubscription(user.id);
+  const sub = await getActiveSubscription(user.id);
   if (!sub) {
     return res.type("html").send(shell("Sem plano", `
       <div class="page">
@@ -678,7 +685,7 @@ app.get("/", (req, res) => {
       </div>`, user, null));
   }
   return res.type("html").send(toolHtml(user, sub));
-});
+}));
 
 // Auth
 app.get("/login", (req, res) => {
@@ -692,7 +699,7 @@ app.post("/auth/login", async (req, res) => {
     if (!email || !password) return res.type("html").send(loginHtml("Preencha todos os campos."));
     const user = await loginUser(email, password);
     req.session.userId = user.id;
-    const sub = getActiveSubscription(user.id);
+    const sub = await getActiveSubscription(user.id);
     res.redirect(sub ? "/" : "/planos");
   } catch (err) {
     res.type("html").send(loginHtml(err.message));
@@ -721,31 +728,31 @@ app.post("/auth/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
 });
 
-app.get("/me", requireAuth, (req, res) => {
-  const sub = getActiveSubscription(req.user.id);
+app.get("/me", requireAuth, asyncHandler(async (req, res) => {
+  const sub = await getActiveSubscription(req.user.id);
   res.json({ ok: true, user: req.user, subscription: sub || null });
-});
+}));
 
 // Plans
-app.get("/planos", (req, res) => {
-  const plans = getPlans();
-  const sub = req.user ? getActiveSubscription(req.user.id) : null;
+app.get("/planos", asyncHandler(async (req, res) => {
+  const plans = await getPlans();
+  const sub = req.user ? await getActiveSubscription(req.user.id) : null;
   res.type("html").send(planosHtml(req.user, sub, plans));
-});
+}));
 
 // Dashboard
-app.get("/dashboard", requireAuth, (req, res) => {
-  const sub = getActiveSubscription(req.user.id);
-  const logs = getUsageLogs(req.user.id);
+app.get("/dashboard", requireAuth, asyncHandler(async (req, res) => {
+  const sub = await getActiveSubscription(req.user.id);
+  const logs = await getUsageLogs(req.user.id);
   res.type("html").send(dashboardHtml(req.user, sub, logs));
-});
+}));
 
 // Payment — create preference
 app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
-  const plan = getPlanById(req.params.planId);
+  const plan = await getPlanById(req.params.planId);
   if (!plan) return res.redirect("/planos");
 
-  const txId = createTransaction(req.user.id, plan.id, plan.price_brl);
+  const txId = await createTransaction(req.user.id, plan.id, plan.price_brl);
 
   if (!mpClient) {
     // simulation mode
@@ -775,18 +782,18 @@ app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
 });
 
 // Payment — simulation page
-app.get("/pagamento/simulacao/:planId", requireAuth, (req, res) => {
-  const plan = getPlanById(req.params.planId);
+app.get("/pagamento/simulacao/:planId", requireAuth, asyncHandler(async (req, res) => {
+  const plan = await getPlanById(req.params.planId);
   if (!plan) return res.redirect("/planos");
   const txId = req.query.txId;
   res.type("html").send(simHtml(req.user, plan, txId));
-});
+}));
 
-app.post("/pagamento/simulacao/:planId", requireAuth, (req, res) => {
+app.post("/pagamento/simulacao/:planId", requireAuth, async (req, res) => {
   const txId = Number(req.body.txId);
   if (!txId) return res.redirect("/planos?erro=Transação+inválida");
   try {
-    approveTransaction(txId);
+    await approveTransaction(txId);
     res.redirect("/pagamento/sucesso");
   } catch (err) {
     res.redirect("/planos?erro=" + encodeURIComponent(err.message));
@@ -794,8 +801,8 @@ app.post("/pagamento/simulacao/:planId", requireAuth, (req, res) => {
 });
 
 // Payment callbacks
-app.get("/pagamento/sucesso", requireAuth, (req, res) => {
-  const sub = getActiveSubscription(req.user.id);
+app.get("/pagamento/sucesso", requireAuth, asyncHandler(async (req, res) => {
+  const sub = await getActiveSubscription(req.user.id);
   res.type("html").send(shell("Pagamento aprovado!", `
     <div class="page">
       <div class="alert alert-ok" style="max-width:480px">
@@ -806,7 +813,7 @@ app.get("/pagamento/sucesso", requireAuth, (req, res) => {
         <a class="btn btn-outline" href="/dashboard">Dashboard</a>
       </div>
     </div>`, req.user, sub));
-});
+}));
 
 app.get("/pagamento/pendente", requireAuth, (req, res) => {
   res.type("html").send(shell("Pagamento pendente", `
@@ -842,7 +849,7 @@ app.post("/pagamento/webhook", express.raw({ type: "application/json" }), async 
 
     if (payment.status === "approved") {
       const txId = Number(payment.external_reference);
-      if (txId) approveTransaction(txId, String(paymentId));
+      if (txId) await approveTransaction(txId, String(paymentId));
     }
     res.sendStatus(200);
   } catch (err) {
@@ -859,7 +866,7 @@ app.post("/extrair", upload.single("pdf"), async (req, res) => {
     if (!req.file.originalname.toLowerCase().endsWith(".pdf"))
       return res.status(400).json({ ok: false, erro: "Arquivo precisa ser um PDF." });
 
-    const sub = getActiveSubscription(req.user.id);
+    const sub = await getActiveSubscription(req.user.id);
     if (!sub) return res.status(402).json({ ok: false, erro: "Sem plano ativo. Acesse /planos para adquirir.", redirect: "/planos" });
 
     const addresses = await extractAddressesFromPdfBuffer(req.file.buffer);
@@ -867,10 +874,10 @@ app.post("/extrair", upload.single("pdf"), async (req, res) => {
 
     // Consume credit if credit-based plan
     if (sub.credits_remaining !== null) {
-      consumeCredit(req.user.id, sub.id);
+      await consumeCredit(req.user.id, sub.id);
     }
 
-    logUsage(req.user.id, sub.id, req.file.originalname, addresses.length);
+    await logUsage(req.user.id, sub.id, req.file.originalname, addresses.length);
 
     return res.json({
       ok: true,

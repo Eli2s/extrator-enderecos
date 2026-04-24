@@ -2,8 +2,11 @@ __pycache__/
 *.pyc
 .env
 *.env*
+!.env.example
 .claude/
 saas.db
+saas.db-shm
+saas.db-wal
 node_modules/
 legacy-python/saas.db
 legacy-python/__pycache__/

@@ -1,8 +1,38 @@
-# Port Node da extracao
+# Extrator GAN SaaS
 
-Versao Node.js focada em upload, extracao e exportacao de PDFs GAN. Sem login, sem planos e sem pagamento.
+Aplicacao Node.js para:
 
-## Rodar
+- cadastro e login
+- compra de planos
+- extracao de enderecos de PDFs GAN
+- download em XLSX e TXT
+
+## Requisitos
+
+- Node.js 20+
+- MySQL/MariaDB
+
+## Variaveis de ambiente
+
+Crie um `.env` com:
+
+```env
+HOST=0.0.0.0
+PORT=3000
+SESSION_SECRET=troque-isto
+
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=seu_banco
+DB_USER=seu_usuario
+DB_PASSWORD=sua_senha
+
+BASE_URL=https://seu-dominio.com
+MP_ACCESS_TOKEN=
+MP_PUBLIC_KEY=
+```
+
+## Rodar localmente
 
 ```bash
 npm install
@@ -15,27 +45,31 @@ Abra:
 http://localhost:3000
 ```
 
-## Teste por linha de comando
+## Hostinger
 
-```bash
-npm run extract -- caminho/do/arquivo.pdf
+Para publicar na Hostinger Node:
+
+1. importe o repositório
+2. use Node 20+
+3. start command: `npm start`
+4. configure as variaveis de ambiente do bloco acima
+
+O app cria as tabelas automaticamente no primeiro boot:
+
+- `users`
+- `plans`
+- `subscriptions`
+- `transactions`
+- `usage_logs`
+
+## Healthcheck
+
+```text
+GET /healthz
 ```
 
-## Objetivo
+Resposta esperada:
 
-- validar upload
-- validar extracao
-- validar download TXT/XLSX
-
-Sem login, sem planos, sem pagamento.
-
-## Publicacao
-
-Para publicar em hospedagem Node:
-
-- o app sobe com `npm start`
-- usa `PORT` do ambiente automaticamente
-- responde `GET /healthz`
-- requer Node `>= 20`
-
-Se a plataforma pedir deteccao por `package.json`, esta pasta ja atende esse requisito.
+```json
+{"ok":true,"runtime":"node","service":"extrator-enderecos-saas","database":"mysql"}
+```
