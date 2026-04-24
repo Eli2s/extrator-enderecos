@@ -65,6 +65,11 @@ app.config.update(
     SESSION_COOKIE_SECURE=SESSION_COOKIE_SECURE,
 )
 
+if os.environ.get("RENDER"):
+    @app.before_request
+    def render_offline():
+        return "Site temporariamente indisponivel.", 503
+
 PLANOS = {
     "credito_1":  {"nome": "1 Extração",   "label": "Avulso",  "valor": 1.90,  "creditos": 1,  "dias": None, "destaque": False},
     "credito_5":  {"nome": "5 Extrações",  "label": "Pack",    "valor": 7.90,  "creditos": 5,  "dias": None, "destaque": False},
