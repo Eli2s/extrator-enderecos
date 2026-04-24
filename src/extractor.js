@@ -100,17 +100,51 @@ export async function extractAddressesFromPdfBuffer(buffer) {
     const lines = groupWordsByLine(words);
     const columns = detectColumns(lines);
 
-    for (const y of [...lines.keys()].sort((a, b) => a - b)) {
+    const sortedYs = [...lines.keys()].sort((a, b) => a - b);
+
+    for (let idx = 0; idx < sortedYs.length; idx++) {
+      const y = sortedYs[idx];
       const rowWords = [...lines.get(y)].sort((a, b) => a.x0 - b.x0);
+
       const enderecoWords = rowWords
         .filter((word) => columns.endereco <= word.x0 && word.x0 < columns.bairro)
         .map((word) => word.text);
-      const bairroWords = rowWords
+      let bairroWords = rowWords
         .filter((word) => columns.bairro <= word.x0 && word.x0 < columns.cep)
         .map((word) => word.text);
-      const cepWords = rowWords
+      let cepWords = rowWords
         .filter((word) => word.x0 >= columns.cep)
         .map((word) => word.text);
+
+      // Endereço na linha atual mas CEP/bairro na linha seguinte (texto quebrado no PDF)
+      if (cepWords.length === 0 && enderecoWords.length > 0 && idx + 1 < sortedYs.length) {
+        const nextY = sortedYs[idx + 1];
+        if (nextY - y <= 9) {
+          const nextRow = [...lines.get(nextY)].sort((a, b) => a.x0 - b.x0);
+          const nextCep = nextRow.filter((w) => w.x0 >= columns.cep).map((w) => w.text);
+          if (nextCep.length > 0) {
+            bairroWords = nextRow.filter((w) => columns.bairro <= w.x0 && w.x0 < columns.cep).map((w) => w.text);
+            cepWords = nextCep;
+            idx++;
+          }
+        }
+      }
+
+      // Bairro na linha adjacente (anterior ou posterior) mas CEP na linha atual
+      if (cepWords.length > 0 && bairroWords.length === 0) {
+        const prevY = idx > 0 ? sortedYs[idx - 1] : null;
+        const nextY = idx + 1 < sortedYs.length ? sortedYs[idx + 1] : null;
+        if (prevY !== null && y - prevY <= 9) {
+          const prevRow = [...lines.get(prevY)].sort((a, b) => a.x0 - b.x0);
+          const prevBairro = prevRow.filter((w) => columns.bairro <= w.x0 && w.x0 < columns.cep).map((w) => w.text);
+          if (prevBairro.length > 0) bairroWords = prevBairro;
+        }
+        if (bairroWords.length === 0 && nextY !== null && nextY - y <= 9) {
+          const nextRow = [...lines.get(nextY)].sort((a, b) => a.x0 - b.x0);
+          const nextBairro = nextRow.filter((w) => columns.bairro <= w.x0 && w.x0 < columns.cep).map((w) => w.text);
+          if (nextBairro.length > 0) bairroWords = nextBairro;
+        }
+      }
 
       const cep = cepWords.map(cleanDigits).join("");
       if (cep.length !== 8 || !/^\d{8}$/.test(cep) || enderecoWords.length === 0) {
@@ -123,7 +157,7 @@ export async function extractAddressesFromPdfBuffer(buffer) {
         continue;
       }
 
-      const key = `${endereco}|${cep}|${bairro}`;
+      const key = `${endereco}|${cep}`;
       if (seen.has(key)) {
         continue;
       }
