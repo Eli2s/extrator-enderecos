@@ -90,7 +90,6 @@ export async function extractAddressesFromPdfBuffer(buffer) {
   });
   const pdf = await loadingTask.promise;
   const addresses = [];
-  const seen = new Set();
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
@@ -157,11 +156,6 @@ export async function extractAddressesFromPdfBuffer(buffer) {
         continue;
       }
 
-      const key = `${endereco}|${cep}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
       addresses.push({ endereco, cep, bairro });
     }
   }
