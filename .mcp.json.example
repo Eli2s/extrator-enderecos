@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "hostinger-mcp": {
+      "command": "C:\\nvm4w\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\User\\AppData\\Roaming\\npm\\node_modules\\hostinger-api-mcp\\server.js"
+      ],
+      "env": {
+        "API_TOKEN": "SEU_TOKEN_AQUI"
+      }
+    }
+  }
+}

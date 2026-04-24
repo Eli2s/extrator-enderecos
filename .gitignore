@@ -8,5 +8,6 @@ saas.db
 saas.db-shm
 saas.db-wal
 node_modules/
+.mcp.json
 legacy-python/saas.db
 legacy-python/__pycache__/
