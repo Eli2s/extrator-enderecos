@@ -18,8 +18,6 @@ import {
 } from "./src/db.js";
 import { createUser, loginUser, getUserById, requireAuth } from "./src/auth.js";
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
-await getDb();
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
