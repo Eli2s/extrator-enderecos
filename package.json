@@ -12,7 +12,11 @@
     "extract": "node src/cli.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.9.0",
     "express": "^4.21.2",
+    "express-session": "^1.19.0",
+    "mercadopago": "^2.12.0",
     "multer": "^2.0.2",
     "pdfjs-dist": "^5.4.149",
     "write-excel-file": "^4.0.2"
