@@ -30,6 +30,8 @@ DB_PASSWORD=sua_senha
 BASE_URL=https://seu-dominio.com
 MP_ACCESS_TOKEN=
 MP_PUBLIC_KEY=
+MP_WEBHOOK_SECRET=
+MP_WEBHOOK_TOLERANCE_MS=300000
 ```
 
 ## Rodar localmente
@@ -53,6 +55,8 @@ Para publicar na Hostinger Node:
 2. use Node 20+
 3. start command: `npm start`
 4. configure as variaveis de ambiente do bloco acima
+5. configure `NODE_ENV=production`
+6. aponte `BASE_URL` para o dominio final com `https://`
 
 O app cria as tabelas automaticamente no primeiro boot:
 
@@ -61,6 +65,30 @@ O app cria as tabelas automaticamente no primeiro boot:
 - `subscriptions`
 - `transactions`
 - `usage_logs`
+- `sessions`
+
+## Mercado Pago
+
+- Sem `MP_ACCESS_TOKEN`, o checkout fica em modo simulado.
+- Com `MP_ACCESS_TOKEN` e `MP_PUBLIC_KEY`, o app usa Checkout Transparente com Pix e cartao.
+- Com `MP_ACCESS_TOKEN`, configure tambem `MP_WEBHOOK_SECRET` para validar `x-signature` no webhook.
+- Em producao, use `BASE_URL` com `https://`.
+
+## Checklist de Producao
+
+Antes de publicar:
+
+1. configure `NODE_ENV=production`
+2. configure `SESSION_SECRET` com pelo menos 32 caracteres
+3. configure `BASE_URL` com o dominio final em `https://`
+4. configure `MP_ACCESS_TOKEN`, `MP_PUBLIC_KEY` e `MP_WEBHOOK_SECRET`
+5. confirme que o banco MySQL da Hostinger esta acessivel pelo app em producao
+6. confirme que o webhook do Mercado Pago aponta para `https://seu-dominio.com/pagamento/webhook`
+7. revise se `credencias.txt` e `credencias.json` nao estao versionados
+8. teste `GET /healthz`
+9. teste um pagamento real de Pix
+10. teste um pagamento real de cartao
+11. confirme no banco se `transactions` ficou `approved` e se a assinatura foi ativada
 
 ## Healthcheck
 

@@ -123,17 +123,7 @@ export async function getDb() {
 
   initPromise = (async () => {
     assertEnv();
-    pool = mysql.createPool({
-      host: DB_HOST,
-      port: Number(DB_PORT),
-      user: DB_USER,
-      password: DB_PASSWORD,
-      database: DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      charset: "utf8mb4",
-    });
+    pool = mysql.createPool(getMysqlPoolConfig());
 
     const conn = await pool.getConnection();
     try {
@@ -146,6 +136,21 @@ export async function getDb() {
   })();
 
   return initPromise;
+}
+
+export function getMysqlPoolConfig() {
+  assertEnv();
+  return {
+    host: DB_HOST,
+    port: Number(DB_PORT),
+    user: DB_USER,
+    password: DB_PASSWORD,
+    database: DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    charset: "utf8mb4",
+  };
 }
 
 export async function getPlans() {
@@ -240,7 +245,31 @@ export async function createTransaction(userId, planId, amountBrl, mpPaymentId =
   return result.insertId;
 }
 
-export async function approveTransaction(txId, mpPaymentId = null) {
+export async function getTransactionById(txId) {
+  const db = await getDb();
+  const [rows] = await db.query(
+    "SELECT * FROM transactions WHERE id = ? LIMIT 1",
+    [txId]
+  );
+  return normalizeRow(rows[0] || null);
+}
+
+export async function updateTransactionStatus(txId, status, mpPaymentId = null) {
+  const db = await getDb();
+  await db.query(
+    `UPDATE transactions
+     SET status = ?, mp_payment_id = COALESCE(?, mp_payment_id)
+     WHERE id = ?`,
+    [status, mpPaymentId, txId]
+  );
+}
+
+export async function approveTransaction(txId, options = {}) {
+  const {
+    mpPaymentId = null,
+    expectedUserId = null,
+    expectedPlanId = null,
+  } = options;
   const db = await getDb();
   const conn = await db.getConnection();
   try {
@@ -250,6 +279,12 @@ export async function approveTransaction(txId, mpPaymentId = null) {
     const tx = rows[0];
     if (!tx) throw new Error("Transação não encontrada");
 
+    if (expectedUserId !== null && Number(tx.user_id) !== Number(expectedUserId)) {
+      throw new Error("TransaÃ§Ã£o invÃ¡lida para este usuÃ¡rio");
+    }
+    if (expectedPlanId !== null && String(tx.plan_id) !== String(expectedPlanId)) {
+      throw new Error("TransaÃ§Ã£o invÃ¡lida para este plano");
+    }
     if (tx.status === "approved") {
       await conn.commit();
       return null;

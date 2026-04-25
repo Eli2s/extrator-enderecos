@@ -1,7 +1,12 @@
+import "dotenv/config";
+import crypto from "node:crypto";
 import express from "express";
 import multer from "multer";
 import session from "express-session";
-import { MercadoPagoConfig, Preference, Payment } from "mercadopago";
+import createMySqlSession from "express-mysql-session";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
+import { MercadoPagoConfig, Payment } from "mercadopago";
 
 import { extractAddressesFromPdfBuffer, generateTxtBuffer } from "./src/extractor.js";
 import { generateXlsxBuffer } from "./src/xlsx.js";
@@ -15,24 +20,111 @@ import {
   getUsageLogs,
   createTransaction,
   approveTransaction,
+  getTransactionById,
+  updateTransactionStatus,
+  getMysqlPoolConfig,
 } from "./src/db.js";
 import { createUser, loginUser, getUserById, requireAuth } from "./src/auth.js";
 
 
 const app = express();
+const isProduction = process.env.NODE_ENV === "production";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const MySQLStore = createMySqlSession(session);
+const sessionStore = new MySQLStore(
+  {
+    ...getMysqlPoolConfig(),
+    createDatabaseTable: true,
+    schema: {
+      tableName: "sessions",
+      columnNames: {
+        session_id: "session_id",
+        expires: "expires",
+        data: "data",
+      },
+    },
+  }
+);
+
+app.disable("x-powered-by");
+
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: handleRateLimit,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  handler: handleRateLimit,
+});
+
+const paymentLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: handleRateLimit,
+});
+
+const extractorLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: handleRateLimit,
+});
+
+const downloadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: handleRateLimit,
+});
 
 app.set("trust proxy", 1);
+app.use(globalLimiter);
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://sdk.mercadopago.com"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:", "https://*.mercadopago.com"],
+      connectSrc: ["'self'", "https://api.mercadopago.com", "https://*.mercadopago.com"],
+      frameSrc: ["'self'", "https://sdk.mercadopago.com", "https://*.mercadopago.com"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
+  name: "extrator.sid",
   secret: process.env.SESSION_SECRET || "dev-secret-change-in-prod",
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, secure: process.env.NODE_ENV === "production", maxAge: 7 * 86400000 },
+  store: sessionStore,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 7 * 86400000,
+  },
 }));
 app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   next();
 });
@@ -50,10 +142,113 @@ app.use(async (req, res, next) => {
   }
 });
 
+app.use((req, res, next) => {
+  req.csrfTokenValue = ensureCsrfToken(req);
+  res.locals.csrfToken = req.csrfTokenValue;
+  next();
+});
+
 // Mercado Pago
 const MP_TOKEN = process.env.MP_ACCESS_TOKEN;
+const MP_PUBLIC_KEY = process.env.MP_PUBLIC_KEY || "";
+const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || "";
+const MP_WEBHOOK_TOLERANCE_MS = Number(process.env.MP_WEBHOOK_TOLERANCE_MS || 5 * 60 * 1000);
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 const mpClient = MP_TOKEN ? new MercadoPagoConfig({ accessToken: MP_TOKEN }) : null;
+assertServerConfig();
+
+function assertServerConfig() {
+  const secret = process.env.SESSION_SECRET || "";
+  if (secret.length < 32) {
+    const message = "SESSION_SECRET deve ter pelo menos 32 caracteres.";
+    if (isProduction) {
+      throw new Error(message);
+    }
+    console.warn(message);
+  }
+
+  if (isProduction && !BASE_URL.startsWith("https://")) {
+    throw new Error("BASE_URL deve usar HTTPS em producao.");
+  }
+
+  if (isProduction && MP_TOKEN && !MP_WEBHOOK_SECRET) {
+    throw new Error("MP_WEBHOOK_SECRET deve estar configurado em producao quando Mercado Pago estiver ativo.");
+  }
+
+  if (isProduction && MP_TOKEN && !MP_PUBLIC_KEY) {
+    throw new Error("MP_PUBLIC_KEY deve estar configurada em producao para checkout transparente com cartao.");
+  }
+
+  if (!isProduction && MP_TOKEN && !MP_WEBHOOK_SECRET) {
+    console.warn("MP_WEBHOOK_SECRET nao configurado; em desenvolvimento o webhook sera aceito sem assinatura.");
+  }
+}
+
+function handleRateLimit(req, res) {
+  const message = "Muitas tentativas. Tente novamente em alguns minutos.";
+  if (isApiRequest(req)) {
+    return res.status(429).json({ ok: false, erro: message });
+  }
+  return res.status(429).type("html").send(shell("Limite excedido", `
+    <div class="form-page">
+      <div class="form-card">
+        <h1>Limite excedido</h1>
+        <p class="sub">${esc(message)}</p>
+      </div>
+    </div>`, req.user || null, null, req.session?.csrfToken || ""));
+}
+
+function parseMercadoPagoSignature(headerValue) {
+  const parts = {};
+  for (const part of String(headerValue || "").split(",")) {
+    const [key, value] = part.trim().split("=");
+    if (key && value) parts[key] = value;
+  }
+  return {
+    ts: parts.ts || "",
+    v1: parts.v1 || "",
+  };
+}
+
+function buildMercadoPagoManifest(req) {
+  const dataId = String(req.query["data.id"] || "").trim().toLowerCase();
+  const requestId = String(req.get("x-request-id") || "").trim();
+  const { ts } = parseMercadoPagoSignature(req.get("x-signature"));
+  return {
+    dataId,
+    requestId,
+    ts,
+    manifest: `id:${dataId};request-id:${requestId};ts:${ts};`,
+  };
+}
+
+function isMercadoPagoWebhookValid(req) {
+  if (!MP_WEBHOOK_SECRET) {
+    return !isProduction;
+  }
+
+  const { ts, v1 } = parseMercadoPagoSignature(req.get("x-signature"));
+  const { dataId, requestId, manifest } = buildMercadoPagoManifest(req);
+  if (!ts || !v1 || !dataId || !requestId) {
+    return false;
+  }
+
+  const tsNumber = Number(ts);
+  if (!Number.isFinite(tsNumber)) {
+    return false;
+  }
+
+  if (Math.abs(Date.now() - tsNumber) > MP_WEBHOOK_TOLERANCE_MS) {
+    return false;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", MP_WEBHOOK_SECRET)
+    .update(manifest)
+    .digest("hex");
+
+  return safeTokenEquals(expected, v1);
+}
 
 // ── Shared CSS ────────────────────────────────────────────────────────────────
 const CSS = `
@@ -219,11 +414,12 @@ const CSS = `
 `;
 
 // ── HTML helpers ───────────────────────────────────────────────────────────────
-function topbar(user, sub) {
+function topbar(user, sub, csrfToken = "") {
   const right = user
     ? `<a class="topbar-link" href="/planos">Planos</a>
        <a class="topbar-link" href="/dashboard">${esc(user.name || user.email)}</a>
        <form method="POST" action="/auth/logout" style="display:inline">
+         ${hiddenCsrfInput(csrfToken)}
          <button class="topbar-link" type="submit">Sair</button>
        </form>`
     : `<a class="topbar-link" href="/planos">Planos</a>
@@ -236,12 +432,13 @@ function topbar(user, sub) {
   </div>`;
 }
 
-function shell(title, body, user, sub) {
+function shell(title, body, user, sub, csrfToken = "") {
   return `<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="csrf-token" content="${esc(csrfToken)}">
 <title>${esc(title)} — Extrator GAN</title>
 <style>${CSS}</style></head><body>
-${topbar(user, sub)}
+${topbar(user, sub, csrfToken)}
 ${body}
 <footer>Extrator GAN &middot; Elias Samuel &middot; <a href="https://github.com/Eli2s">github.com/Eli2s</a></footer>
 </body></html>`;
@@ -292,11 +489,11 @@ function landingHtml(user, sub) {
 }
 
 // ── Page: Tool ─────────────────────────────────────────────────────────────────
-function toolHtml(user, sub) {
+function toolHtml(user, sub, csrfToken) {
   const credInfo = sub
     ? sub.credits_remaining !== null
       ? `<span class="badge badge-ok">${sub.credits_remaining} crédito${sub.credits_remaining !== 1 ? "s" : ""}</span>`
-      : `<span class="badge badge-ok">Ilimitado até ${sub.expires_at ? sub.expires_at.slice(0, 10) : "—"}</span>`
+      : `<span class="badge badge-ok">Ilimitado até ${sub.expires_at ? formatDateOnly(sub.expires_at) : "—"}</span>`
     : "";
 
   return shell("Extrair Endereços", `
@@ -350,6 +547,7 @@ function toolHtml(user, sub) {
   </div>
 <script>
   let file = null, result = null, baseName = "enderecos";
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
 
   function splitAddr(full) {
     const m = full.match(/^(.+?),?\\s+(\\d[\\w\\s\\-.\/]*)$/);
@@ -435,7 +633,7 @@ function toolHtml(user, sub) {
     const form = new FormData();
     form.append("pdf", file);
     try {
-      const res = await fetch("/extrair", { method: "POST", body: form });
+      const res = await fetch("/extrair", { method: "POST", headers: { "X-CSRF-Token": csrfToken }, body: form });
       const data = await res.json();
       if (!data.ok) throw new Error(data.erro);
       result = data.enderecos;
@@ -456,7 +654,7 @@ function toolHtml(user, sub) {
       const linhas = result.map(r => cols.map(c => c.get(r)));
       const res = await fetch("/baixar/" + fmt, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
         body: JSON.stringify({ colunas, linhas, nome: baseName })
       });
       if (!res.ok) throw new Error("Falha ao gerar download.");
@@ -474,11 +672,11 @@ function toolHtml(user, sub) {
   dlXlsx2.addEventListener("click", () => download("xlsx"));
   dlTxt.addEventListener("click", () => download("txt"));
   dlTxt2.addEventListener("click", () => download("txt"));
-</script>`, user, sub);
+</script>`, user, sub, csrfToken);
 }
 
 // ── Page: Login ────────────────────────────────────────────────────────────────
-function loginHtml(error, ok) {
+function loginHtml(error, ok, csrfToken) {
   return shell("Entrar", `
   <div class="form-page">
     <div class="form-card">
@@ -487,6 +685,7 @@ function loginHtml(error, ok) {
       ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
       ${ok ? `<div class="form-ok">${esc(ok)}</div>` : ""}
       <form method="POST" action="/auth/login">
+        ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="email">E-mail</label>
           <input class="form-input" type="email" id="email" name="email" required autocomplete="email">
@@ -499,11 +698,11 @@ function loginHtml(error, ok) {
       </form>
       <p class="form-foot">Não tem conta? <a href="/register">Criar conta</a></p>
     </div>
-  </div>`, null, null);
+  </div>`, null, null, csrfToken);
 }
 
 // ── Page: Register ─────────────────────────────────────────────────────────────
-function registerHtml(error) {
+function registerHtml(error, csrfToken) {
   return shell("Criar Conta", `
   <div class="form-page">
     <div class="form-card">
@@ -511,6 +710,7 @@ function registerHtml(error) {
       <p class="sub">Crie sua conta e comece a extrair.</p>
       ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
       <form method="POST" action="/auth/register">
+        ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="name">Nome</label>
           <input class="form-input" type="text" id="name" name="name" required autocomplete="name">
@@ -527,11 +727,11 @@ function registerHtml(error) {
       </form>
       <p class="form-foot">Já tem conta? <a href="/login">Entrar</a></p>
     </div>
-  </div>`, null, null);
+  </div>`, null, null, csrfToken);
 }
 
 // ── Page: Planos ───────────────────────────────────────────────────────────────
-function planosHtml(user, sub, plans) {
+function planosHtml(user, sub, plans, csrfToken) {
   const cards = plans.map(p => {
     const featured = p.id === "semanal";
     const price = p.price_brl.toFixed(2).replace(".", ",");
@@ -547,6 +747,7 @@ function planosHtml(user, sub, plans) {
       <div class="plan-desc">${esc(descMap[p.id] || "")}</div>
       ${user
         ? `<form method="POST" action="/pagamento/criar/${esc(p.id)}">
+             ${hiddenCsrfInput(csrfToken)}
              <button type="submit" class="btn ${featured ? "btn-primary" : "btn-outline"}" style="width:100%;justify-content:center">Comprar</button>
            </form>`
         : `<a class="btn ${featured ? "btn-primary" : "btn-outline"}" href="/register" style="justify-content:center;display:flex">Criar conta</a>`
@@ -561,11 +762,11 @@ function planosHtml(user, sub, plans) {
       <p>Pague apenas o que usar. Sem assinaturas obrigatórias.</p>
     </div>
     <div class="plans-grid">${cards}</div>
-  </div>`, user, sub);
+  </div>`, user, sub, csrfToken);
 }
 
 // ── Page: Dashboard ────────────────────────────────────────────────────────────
-function dashboardHtml(user, sub, logs) {
+function dashboardHtml(user, sub, logs, csrfToken) {
   const planInfo = sub
     ? `<span class="badge badge-ok">${esc(sub.plan_name)}</span>`
     : `<span class="badge badge-warn">Sem plano ativo</span>`;
@@ -578,7 +779,7 @@ function dashboardHtml(user, sub, logs) {
 
   const validade = sub
     ? sub.expires_at
-      ? sub.expires_at.slice(0, 10)
+      ? formatDateOnly(sub.expires_at)
       : "Sem validade"
     : "—";
 
@@ -588,7 +789,7 @@ function dashboardHtml(user, sub, logs) {
         <td>${esc(l.filename || "—")}</td>
         <td>${String(l.extracted_count)}</td>
         <td>${esc(l.plan_name || "—")}</td>
-        <td>${String(l.used_at).slice(0, 16).replace("T", " ")}</td>
+        <td>${formatDateTime(l.used_at)}</td>
       </tr>`).join("")
     : `<tr><td colspan="5" style="text-align:center;color:var(--t3);padding:28px">Nenhuma extração ainda.</td></tr>`;
 
@@ -628,11 +829,11 @@ function dashboardHtml(user, sub, logs) {
       <a class="btn btn-primary" href="/">Extrair agora</a>
       <a class="btn btn-outline" href="/planos">Ver planos</a>
     </div>
-  </div>`, user, sub);
+  </div>`, user, sub, csrfToken);
 }
 
 // ── Page: Simulação pagamento ──────────────────────────────────────────────────
-function simHtml(user, plan, txId) {
+function simHtml(user, plan, txId, csrfToken) {
   return shell("Confirmar Pagamento", `
   <div class="page">
     <div class="form-card" style="max-width:420px">
@@ -644,12 +845,281 @@ function simHtml(user, plan, txId) {
         <div style="font-size:13px;color:var(--t2);margin-top:4px">R$ ${plan.price_brl.toFixed(2).replace(".", ",")}</div>
       </div>
       <form method="POST" action="/pagamento/simulacao/${esc(plan.id)}">
+        ${hiddenCsrfInput(csrfToken)}
         <input type="hidden" name="txId" value="${esc(String(txId))}">
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">✓ Aprovar pagamento (teste)</button>
       </form>
       <p class="form-foot" style="margin-top:12px"><a href="/planos">Cancelar</a></p>
     </div>
-  </div>`, user, null);
+  </div>`, user, null, csrfToken);
+}
+
+function checkoutHtml(user, plan, txId, csrfToken) {
+  const amount = Number(plan.price_brl).toFixed(2);
+  const userEmail = esc(user.email || "");
+  const userName = esc(user.name || "");
+  const publicKey = esc(MP_PUBLIC_KEY);
+
+  return shell("Finalizar pagamento", `
+  <div class="page">
+    <div class="hero" style="max-width:760px">
+      <div class="pill">&#x2736; Checkout Transparente</div>
+      <h1>Pague seu <span class="gr">${esc(plan.name)}</span></h1>
+      <p>Escolha Pix ou cartão e finalize sem sair do site.</p>
+    </div>
+
+    <div class="card" style="max-width:760px">
+      <div class="card-pad">
+        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:20px">
+          <div>
+            <div class="section-title" style="margin-bottom:6px">Plano</div>
+            <div style="font-size:20px;font-weight:700">${esc(plan.name)}</div>
+          </div>
+          <div style="text-align:right">
+            <div class="section-title" style="margin-bottom:6px">Valor</div>
+            <div style="font-size:20px;font-weight:800">R$ ${amount.replace(".", ",")}</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+          <button class="btn btn-primary" id="tabPix" type="button">Pix</button>
+          <button class="btn btn-outline" id="tabCard" type="button">Cartão</button>
+        </div>
+
+        <div id="statusBox" class="status" style="max-width:none;padding:0 0 12px">
+          <div class="dot" id="payDot"></div>
+          <span id="payStatus">Preencha os dados para pagar.</span>
+        </div>
+
+        <section id="pixPanel">
+          <div class="form-group">
+            <label for="pixCpf">CPF do pagador</label>
+            <input class="form-input" id="pixCpf" inputmode="numeric" autocomplete="off" placeholder="Somente números">
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-primary" id="pixBtn" type="button">Gerar Pix</button>
+            <button class="btn btn-outline" id="pixCheckBtn" type="button" disabled>Verificar pagamento</button>
+          </div>
+          <div id="pixResult" hidden style="margin-top:18px;border-top:1px solid var(--border);padding-top:18px">
+            <div id="pixQrWrap" style="display:flex;justify-content:center;margin-bottom:16px"></div>
+            <div class="form-group">
+              <label for="pixCode">Copia e cola</label>
+              <textarea class="form-input" id="pixCode" rows="4" readonly></textarea>
+            </div>
+            <a id="pixTicketLink" class="btn btn-outline" href="#" target="_blank" rel="noreferrer">Abrir comprovante</a>
+          </div>
+        </section>
+
+        <section id="cardPanel" hidden>
+          <div id="cardUnavailable" class="alert alert-warn" ${publicKey ? "hidden" : ""}>
+            MP_PUBLIC_KEY não configurada.
+          </div>
+          <form id="form-checkout" ${publicKey ? "" : "hidden"}>
+            <div class="form-group">
+              <label>Número do cartão</label>
+              <div id="form-checkout__cardNumber" class="form-input" style="padding:11px 12px;height:auto"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group">
+                <label>Validade</label>
+                <div id="form-checkout__expirationDate" class="form-input" style="padding:11px 12px;height:auto"></div>
+              </div>
+              <div class="form-group">
+                <label>CVV</label>
+                <div id="form-checkout__securityCode" class="form-input" style="padding:11px 12px;height:auto"></div>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="form-checkout__cardholderName">Nome do titular</label>
+              <input class="form-input" type="text" id="form-checkout__cardholderName" value="${userName}">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group">
+                <label for="form-checkout__issuer">Banco emissor</label>
+                <select class="form-input" id="form-checkout__issuer"></select>
+              </div>
+              <div class="form-group">
+                <label for="form-checkout__installments">Parcelas</label>
+                <select class="form-input" id="form-checkout__installments"></select>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group">
+                <label for="form-checkout__identificationType">Documento</label>
+                <select class="form-input" id="form-checkout__identificationType"></select>
+              </div>
+              <div class="form-group">
+                <label for="form-checkout__identificationNumber">Número</label>
+                <input class="form-input" type="text" id="form-checkout__identificationNumber" inputmode="numeric">
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="form-checkout__cardholderEmail">E-mail</label>
+              <input class="form-input" type="email" id="form-checkout__cardholderEmail" value="${userEmail}">
+            </div>
+            <button class="btn btn-primary" type="submit" id="form-checkout__submit">Pagar com cartão</button>
+            <progress value="0" class="progress-bar" style="width:100%;margin-top:12px"></progress>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script src="https://sdk.mercadopago.com/js/v2"></script>
+  <script>
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
+    const txId = ${Number(txId)};
+    const planId = ${JSON.stringify(plan.id)};
+    const amount = ${JSON.stringify(amount)};
+    const mpPublicKey = ${JSON.stringify(MP_PUBLIC_KEY)};
+    const pixPanel = document.getElementById("pixPanel");
+    const cardPanel = document.getElementById("cardPanel");
+    const tabPix = document.getElementById("tabPix");
+    const tabCard = document.getElementById("tabCard");
+    const payDot = document.getElementById("payDot");
+    const payStatus = document.getElementById("payStatus");
+    const pixBtn = document.getElementById("pixBtn");
+    const pixCheckBtn = document.getElementById("pixCheckBtn");
+    const pixResult = document.getElementById("pixResult");
+    const pixQrWrap = document.getElementById("pixQrWrap");
+    const pixCode = document.getElementById("pixCode");
+    const pixTicketLink = document.getElementById("pixTicketLink");
+    let pixPaymentId = null;
+
+    function setStatus(message, tone = "") {
+      payStatus.textContent = message;
+      payDot.className = "dot" + (tone ? " " + tone : "");
+    }
+
+    function toggleTab(mode) {
+      const isPix = mode === "pix";
+      pixPanel.hidden = !isPix;
+      cardPanel.hidden = isPix;
+      tabPix.className = "btn " + (isPix ? "btn-primary" : "btn-outline");
+      tabCard.className = "btn " + (!isPix ? "btn-primary" : "btn-outline");
+    }
+
+    async function parseJsonResponse(res) {
+      const data = await res.json().catch(() => ({ ok: false, erro: "Resposta inválida do servidor." }));
+      if (!res.ok || data.ok === false) throw new Error(data.erro || "Falha no pagamento.");
+      return data;
+    }
+
+    tabPix.addEventListener("click", () => toggleTab("pix"));
+    tabCard.addEventListener("click", () => toggleTab("card"));
+
+    pixBtn.addEventListener("click", async () => {
+      const identificationNumber = document.getElementById("pixCpf").value.replace(/\\D/g, "");
+      if (identificationNumber.length !== 11) {
+        setStatus("Informe um CPF válido para gerar o Pix.", "error");
+        return;
+      }
+      pixBtn.disabled = true;
+      setStatus("Gerando cobrança Pix...", "busy");
+      try {
+        const res = await fetch("/pagamento/transparente/pix/" + planId, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+          body: JSON.stringify({ txId, identificationNumber })
+        });
+        const data = await parseJsonResponse(res);
+        pixPaymentId = data.paymentId;
+        pixCheckBtn.disabled = false;
+        pixResult.hidden = false;
+        pixQrWrap.innerHTML = data.qrCodeBase64 ? '<img alt="QR Code Pix" style="max-width:260px;width:100%;background:#fff;padding:12px;border-radius:12px" src="data:image/png;base64,' + data.qrCodeBase64 + '">' : "";
+        pixCode.value = data.qrCode || "";
+        pixTicketLink.href = data.ticketUrl || "#";
+        setStatus("Pix gerado. Faça o pagamento e depois clique em verificar.", "ok");
+      } catch (error) {
+        setStatus(error.message, "error");
+      } finally {
+        pixBtn.disabled = false;
+      }
+    });
+
+    pixCheckBtn.addEventListener("click", async () => {
+      if (!pixPaymentId) return;
+      pixCheckBtn.disabled = true;
+      setStatus("Verificando pagamento Pix...", "busy");
+      try {
+        const res = await fetch("/pagamento/transparente/status/" + txId + "?paymentId=" + encodeURIComponent(pixPaymentId), {
+          headers: { "X-CSRF-Token": csrfToken }
+        });
+        const data = await parseJsonResponse(res);
+        if (data.approved) {
+          window.location.href = "/pagamento/sucesso";
+          return;
+        }
+        setStatus("Status atual: " + data.status + ". Aguarde a compensação.", "busy");
+      } catch (error) {
+        setStatus(error.message, "error");
+      } finally {
+        pixCheckBtn.disabled = false;
+      }
+    });
+
+    if (mpPublicKey) {
+      const mp = new MercadoPago(mpPublicKey);
+      const cardForm = mp.cardForm({
+        amount,
+        iframe: true,
+        form: {
+          id: "form-checkout",
+          cardNumber: { id: "form-checkout__cardNumber", placeholder: "Número do cartão" },
+          expirationDate: { id: "form-checkout__expirationDate", placeholder: "MM/AA" },
+          securityCode: { id: "form-checkout__securityCode", placeholder: "CVV" },
+          cardholderName: { id: "form-checkout__cardholderName", placeholder: "Titular do cartão" },
+          issuer: { id: "form-checkout__issuer", placeholder: "Banco emissor" },
+          installments: { id: "form-checkout__installments", placeholder: "Parcelas" },
+          identificationType: { id: "form-checkout__identificationType", placeholder: "Documento" },
+          identificationNumber: { id: "form-checkout__identificationNumber", placeholder: "Número do documento" },
+          cardholderEmail: { id: "form-checkout__cardholderEmail", placeholder: "E-mail" }
+        },
+        callbacks: {
+          onSubmit: async (event) => {
+            event.preventDefault();
+            setStatus("Processando pagamento com cartão...", "busy");
+            const submitButton = document.getElementById("form-checkout__submit");
+            submitButton.disabled = true;
+            try {
+              const payload = cardForm.getCardFormData();
+              const res = await fetch("/pagamento/transparente/cartao/" + planId, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+                body: JSON.stringify({
+                  txId,
+                  token: payload.token,
+                  issuer_id: payload.issuerId ? Number(payload.issuerId) : undefined,
+                  payment_method_id: payload.paymentMethodId,
+                  installments: Number(payload.installments),
+                  payer: {
+                    email: payload.cardholderEmail,
+                    identificationType: payload.identificationType,
+                    identificationNumber: payload.identificationNumber,
+                    name: document.getElementById("form-checkout__cardholderName").value
+                  }
+                })
+              });
+              const data = await parseJsonResponse(res);
+              if (data.approved) {
+                window.location.href = "/pagamento/sucesso";
+                return;
+              }
+              setStatus("Pagamento criado com status " + data.status + ".", data.status === "pending" ? "busy" : "error");
+            } catch (error) {
+              setStatus(error.message, "error");
+            } finally {
+              submitButton.disabled = false;
+            }
+          },
+          onFetching: () => {
+            const progressBar = document.querySelector(".progress-bar");
+            progressBar.removeAttribute("value");
+            return () => progressBar.setAttribute("value", "0");
+          }
+        }
+      });
+    }
+  </script>`, user, null, csrfToken);
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -659,6 +1129,126 @@ function sanitizeDownloadName(name) {
     .replace(/[^\w.-]+/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "") || "enderecos";
+}
+
+function hiddenCsrfInput(csrfToken) {
+  return csrfToken ? `<input type="hidden" name="_csrf" value="${esc(csrfToken)}">` : "";
+}
+
+function ensureCsrfToken(req) {
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = crypto.randomBytes(32).toString("hex");
+  }
+  return req.session.csrfToken;
+}
+
+function safeTokenEquals(expected, provided) {
+  const expectedBuffer = Buffer.from(String(expected || ""), "utf8");
+  const providedBuffer = Buffer.from(String(provided || ""), "utf8");
+  if (expectedBuffer.length === 0 || expectedBuffer.length !== providedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function requireCsrf(req, res, next) {
+  const provided = req.get("x-csrf-token") || req.body?._csrf;
+  if (safeTokenEquals(req.session?.csrfToken, provided)) {
+    return next();
+  }
+
+  if (isApiRequest(req)) {
+    return res.status(403).json({ ok: false, erro: "Falha de validacao CSRF." });
+  }
+
+  return res.status(403).type("html").send(shell("Sessao invalida", `
+    <div class="form-page">
+      <div class="form-card">
+        <h1>Sessao invalida</h1>
+        <p class="sub">Atualize a pagina e tente novamente.</p>
+      </div>
+    </div>`, req.user || null, null, req.session?.csrfToken || ""));
+}
+
+function requireApiAuth(req, res, next) {
+  if (req.user) return next();
+  return res.status(401).json({ ok: false, erro: "Login necessario. Acesse /login." });
+}
+
+function isApiRequest(req) {
+  return req.path.startsWith("/extrair")
+    || req.path.startsWith("/baixar/")
+    || req.path === "/me"
+    || req.is("multipart/form-data")
+    || req.is("application/json");
+}
+
+function normalizeTextField(value, maxLength) {
+  return String(value ?? "").trim().slice(0, maxLength);
+}
+
+function formatDateOnly(value) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16).replace("T", " ");
+  return date.toISOString().slice(0, 16).replace("T", " ");
+}
+
+function splitFullName(nameOrEmail) {
+  const raw = String(nameOrEmail || "").trim();
+  if (!raw) return { firstName: "Cliente", lastName: "Extrator" };
+  const parts = raw.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return { firstName: parts[0], lastName: "Extrator" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+function buildNotificationUrl() {
+  return BASE_URL.startsWith("https://") ? `${BASE_URL}/pagamento/webhook` : undefined;
+}
+
+function buildPayerFromUser(user, overrides = {}) {
+  const email = normalizeTextField(overrides.email || user?.email, 254).toLowerCase();
+  const docType = normalizeTextField(overrides.identificationType || "CPF", 20).toUpperCase();
+  const docNumber = String(overrides.identificationNumber || "").replace(/\D/g, "").slice(0, 20);
+  const names = splitFullName(overrides.name || user?.name || user?.email);
+  return {
+    email,
+    first_name: names.firstName,
+    last_name: names.lastName,
+    identification: docNumber ? { type: docType, number: docNumber } : undefined,
+  };
+}
+
+async function syncPaymentStatus(txId, payment) {
+  const paymentId = String(payment?.id || "");
+  const status = String(payment?.status || "pending");
+  if (!paymentId) return { approved: false, status };
+
+  if (status === "approved") {
+    await approveTransaction(txId, { mpPaymentId: paymentId });
+    return { approved: true, status };
+  }
+
+  await updateTransactionStatus(txId, status, paymentId);
+  return { approved: false, status };
+}
+
+async function establishUserSession(req, userId) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => {
+      if (err) return reject(err);
+      req.session.userId = userId;
+      req.session.csrfToken = crypto.randomBytes(32).toString("hex");
+      return req.session.save((saveErr) => saveErr ? reject(saveErr) : resolve());
+    });
+  });
 }
 
 function asyncHandler(fn) {
@@ -680,50 +1270,56 @@ app.get("/", asyncHandler(async (req, res) => {
       <div class="page">
         <div class="alert alert-warn">Você não tem um plano ativo. <a href="/planos" style="color:inherit;font-weight:700">Ver planos →</a></div>
         ${landingHtml(user, null).match(/<div class="plans-grid"[\s\S]*?<\/div>\s*<\/div>/)?.[0] || ""}
-      </div>`, user, null));
+      </div>`, user, null, req.csrfTokenValue));
   }
-  return res.type("html").send(toolHtml(user, sub));
+  return res.type("html").send(toolHtml(user, sub, req.csrfTokenValue));
 }));
 
 // Auth
 app.get("/login", (req, res) => {
   if (req.user) return res.redirect("/");
-  res.type("html").send(loginHtml(req.query.erro, req.query.ok));
+  res.type("html").send(loginHtml(req.query.erro, req.query.ok, req.csrfTokenValue));
 });
 
-app.post("/auth/login", async (req, res) => {
+app.post("/auth/login", authLimiter, requireCsrf, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.type("html").send(loginHtml("Preencha todos os campos."));
+    const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+    const password = String(req.body?.password ?? "");
+    if (!email || !password) return res.type("html").send(loginHtml("Preencha todos os campos.", null, req.csrfTokenValue));
     const user = await loginUser(email, password);
-    req.session.userId = user.id;
+    await establishUserSession(req, user.id);
     const sub = await getActiveSubscription(user.id);
     res.redirect(sub ? "/" : "/planos");
   } catch (err) {
-    res.type("html").send(loginHtml(err.message));
+    res.type("html").send(loginHtml(err.message, null, req.csrfTokenValue));
   }
 });
 
 app.get("/register", (req, res) => {
   if (req.user) return res.redirect("/");
-  res.type("html").send(registerHtml(req.query.erro));
+  res.type("html").send(registerHtml(req.query.erro, req.csrfTokenValue));
 });
 
-app.post("/auth/register", async (req, res) => {
+app.post("/auth/register", authLimiter, requireCsrf, async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    if (!name || !email || !password) return res.type("html").send(registerHtml("Preencha todos os campos."));
-    if (password.length < 8) return res.type("html").send(registerHtml("A senha deve ter ao menos 8 caracteres."));
+    const name = normalizeTextField(req.body?.name, 191);
+    const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+    const password = String(req.body?.password ?? "");
+    if (!name || !email || !password) return res.type("html").send(registerHtml("Preencha todos os campos.", req.csrfTokenValue));
+    if (password.length < 8) return res.type("html").send(registerHtml("A senha deve ter ao menos 8 caracteres.", req.csrfTokenValue));
     const user = await createUser(email, password, name);
-    req.session.userId = user.id;
+    await establishUserSession(req, user.id);
     res.redirect("/planos");
   } catch (err) {
-    res.type("html").send(registerHtml(err.message));
+    res.type("html").send(registerHtml(err.message, req.csrfTokenValue));
   }
 });
 
-app.post("/auth/logout", (req, res) => {
-  req.session.destroy(() => res.redirect("/"));
+app.post("/auth/logout", requireCsrf, (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("extrator.sid");
+    res.redirect("/");
+  });
 });
 
 app.get("/me", requireAuth, asyncHandler(async (req, res) => {
@@ -735,18 +1331,18 @@ app.get("/me", requireAuth, asyncHandler(async (req, res) => {
 app.get("/planos", asyncHandler(async (req, res) => {
   const plans = await getPlans();
   const sub = req.user ? await getActiveSubscription(req.user.id) : null;
-  res.type("html").send(planosHtml(req.user, sub, plans));
+  res.type("html").send(planosHtml(req.user, sub, plans, req.csrfTokenValue));
 }));
 
 // Dashboard
 app.get("/dashboard", requireAuth, asyncHandler(async (req, res) => {
   const sub = await getActiveSubscription(req.user.id);
   const logs = await getUsageLogs(req.user.id);
-  res.type("html").send(dashboardHtml(req.user, sub, logs));
+  res.type("html").send(dashboardHtml(req.user, sub, logs, req.csrfTokenValue));
 }));
 
 // Payment — create preference
-app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
+app.post("/pagamento/criar/:planId", requireAuth, paymentLimiter, requireCsrf, async (req, res) => {
   const plan = await getPlanById(req.params.planId);
   if (!plan) return res.redirect("/planos");
 
@@ -757,8 +1353,10 @@ app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
     return res.redirect(`/pagamento/simulacao/${plan.id}?txId=${txId}`);
   }
 
+  return res.redirect(`/checkout/${plan.id}?txId=${txId}`);
+
   try {
-    const pref = new Preference(mpClient);
+    const pref = null;
     const resp = await pref.create({
       body: {
         items: [{ title: `Extrator GAN — ${plan.name}`, quantity: 1, unit_price: plan.price_brl, currency_id: "BRL" }],
@@ -772,7 +1370,7 @@ app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
         notification_url: `${BASE_URL}/pagamento/webhook`,
       }
     });
-    res.redirect(resp.init_point);
+    res.redirect(resp?.init_point || "/planos?erro=Fluxo+legado+desativado");
   } catch (err) {
     console.error("MP error", err);
     res.redirect("/planos?erro=Erro+ao+iniciar+pagamento");
@@ -783,20 +1381,184 @@ app.post("/pagamento/criar/:planId", requireAuth, async (req, res) => {
 app.get("/pagamento/simulacao/:planId", requireAuth, asyncHandler(async (req, res) => {
   const plan = await getPlanById(req.params.planId);
   if (!plan) return res.redirect("/planos");
-  const txId = req.query.txId;
-  res.type("html").send(simHtml(req.user, plan, txId));
+  const txId = Number(req.query.txId);
+  const tx = await getTransactionById(txId);
+  if (!tx || Number(tx.user_id) !== Number(req.user.id) || String(tx.plan_id) !== String(plan.id)) {
+    return res.redirect("/planos?erro=TransaÃ§Ã£o+invÃ¡lida");
+  }
+  res.type("html").send(simHtml(req.user, plan, txId, req.csrfTokenValue));
 }));
 
-app.post("/pagamento/simulacao/:planId", requireAuth, async (req, res) => {
+app.post("/pagamento/simulacao/:planId", requireAuth, paymentLimiter, requireCsrf, async (req, res) => {
   const txId = Number(req.body.txId);
   if (!txId) return res.redirect("/planos?erro=Transação+inválida");
   try {
-    await approveTransaction(txId);
+    await approveTransaction(txId, { expectedUserId: req.user.id, expectedPlanId: req.params.planId });
     res.redirect("/pagamento/sucesso");
   } catch (err) {
     res.redirect("/planos?erro=" + encodeURIComponent(err.message));
   }
 });
+
+app.get("/checkout/:planId", requireAuth, asyncHandler(async (req, res) => {
+  const plan = await getPlanById(req.params.planId);
+  const txId = Number(req.query.txId);
+  const tx = await getTransactionById(txId);
+  if (!plan || !tx || Number(tx.user_id) !== Number(req.user.id) || String(tx.plan_id) !== String(plan.id)) {
+    return res.redirect("/planos?erro=Transacao+invalida");
+  }
+  if (!mpClient) {
+    return res.redirect(`/pagamento/simulacao/${plan.id}?txId=${txId}`);
+  }
+  return res.type("html").send(checkoutHtml(req.user, plan, txId, req.csrfTokenValue));
+}));
+
+app.post("/pagamento/transparente/pix/:planId", requireAuth, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  if (!mpClient) {
+    return res.status(400).json({ ok: false, erro: "Mercado Pago nao configurado." });
+  }
+
+  const plan = await getPlanById(req.params.planId);
+  const txId = Number(req.body?.txId);
+  const identificationNumber = String(req.body?.identificationNumber || "").replace(/\D/g, "");
+  const tx = await getTransactionById(txId);
+
+  if (!plan || !tx || Number(tx.user_id) !== Number(req.user.id) || String(tx.plan_id) !== String(plan.id)) {
+    return res.status(403).json({ ok: false, erro: "Transacao invalida." });
+  }
+  if (tx.status === "approved") {
+    return res.status(409).json({ ok: false, erro: "Esta transacao ja foi aprovada." });
+  }
+  if (identificationNumber.length !== 11) {
+    return res.status(400).json({ ok: false, erro: "Informe um CPF valido." });
+  }
+
+  const paymentClient = new Payment(mpClient);
+  const payment = await paymentClient.create({
+    body: {
+      transaction_amount: Number(plan.price_brl),
+      description: `Extrator GAN - ${plan.name}`,
+      payment_method_id: "pix",
+      external_reference: String(txId),
+      notification_url: buildNotificationUrl(),
+      payer: buildPayerFromUser(req.user, {
+        identificationType: "CPF",
+        identificationNumber,
+      }),
+      metadata: {
+        tx_id: String(txId),
+        plan_id: String(plan.id),
+        user_id: String(req.user.id),
+      },
+    },
+    requestOptions: {
+      idempotencyKey: `pix-${txId}`,
+    },
+  });
+
+  await syncPaymentStatus(txId, payment);
+
+  return res.json({
+    ok: true,
+    paymentId: String(payment.id),
+    status: payment.status,
+    qrCode: payment.point_of_interaction?.transaction_data?.qr_code || "",
+    qrCodeBase64: payment.point_of_interaction?.transaction_data?.qr_code_base64 || "",
+    ticketUrl: payment.point_of_interaction?.transaction_data?.ticket_url || "",
+  });
+}));
+
+app.post("/pagamento/transparente/cartao/:planId", requireAuth, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  if (!mpClient) {
+    return res.status(400).json({ ok: false, erro: "Mercado Pago nao configurado." });
+  }
+
+  const plan = await getPlanById(req.params.planId);
+  const txId = Number(req.body?.txId);
+  const tx = await getTransactionById(txId);
+
+  if (!plan || !tx || Number(tx.user_id) !== Number(req.user.id) || String(tx.plan_id) !== String(plan.id)) {
+    return res.status(403).json({ ok: false, erro: "Transacao invalida." });
+  }
+  if (tx.status === "approved") {
+    return res.status(409).json({ ok: false, erro: "Esta transacao ja foi aprovada." });
+  }
+
+  const token = normalizeTextField(req.body?.token, 256);
+  const paymentMethodId = normalizeTextField(req.body?.payment_method_id, 50);
+  const installments = Number(req.body?.installments);
+  const issuerId = req.body?.issuer_id ? Number(req.body.issuer_id) : undefined;
+  const payer = buildPayerFromUser(req.user, req.body?.payer || {});
+
+  if (!token || !paymentMethodId || !Number.isFinite(installments) || installments < 1) {
+    return res.status(400).json({ ok: false, erro: "Dados do cartao invalidos." });
+  }
+  if (!payer.email || !payer.identification?.number) {
+    return res.status(400).json({ ok: false, erro: "E-mail e documento do pagador sao obrigatorios." });
+  }
+
+  const paymentClient = new Payment(mpClient);
+  const payment = await paymentClient.create({
+    body: {
+      transaction_amount: Number(plan.price_brl),
+      token,
+      description: `Extrator GAN - ${plan.name}`,
+      installments,
+      payment_method_id: paymentMethodId,
+      issuer_id: issuerId,
+      external_reference: String(txId),
+      notification_url: buildNotificationUrl(),
+      payer,
+      metadata: {
+        tx_id: String(txId),
+        plan_id: String(plan.id),
+        user_id: String(req.user.id),
+      },
+    },
+    requestOptions: {
+      idempotencyKey: `card-${txId}-${crypto.randomUUID()}`,
+    },
+  });
+
+  const sync = await syncPaymentStatus(txId, payment);
+
+  return res.json({
+    ok: true,
+    approved: sync.approved,
+    paymentId: String(payment.id),
+    status: payment.status,
+    statusDetail: payment.status_detail || "",
+  });
+}));
+
+app.get("/pagamento/transparente/status/:txId", requireAuth, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  if (!mpClient) {
+    return res.status(400).json({ ok: false, erro: "Mercado Pago nao configurado." });
+  }
+
+  const txId = Number(req.params.txId);
+  const paymentId = normalizeTextField(req.query.paymentId, 64);
+  const tx = await getTransactionById(txId);
+  if (!tx || Number(tx.user_id) !== Number(req.user.id)) {
+    return res.status(403).json({ ok: false, erro: "Transacao invalida." });
+  }
+
+  const effectivePaymentId = paymentId || String(tx.mp_payment_id || "");
+  if (!effectivePaymentId) {
+    return res.status(400).json({ ok: false, erro: "Pagamento ainda nao foi criado." });
+  }
+
+  const paymentClient = new Payment(mpClient);
+  const payment = await paymentClient.get({ id: effectivePaymentId });
+  const sync = await syncPaymentStatus(txId, payment);
+
+  return res.json({
+    ok: true,
+    approved: sync.approved,
+    status: payment.status,
+    paymentId: String(payment.id),
+  });
+}));
 
 // Payment callbacks
 app.get("/pagamento/sucesso", requireAuth, asyncHandler(async (req, res) => {
@@ -810,7 +1572,7 @@ app.get("/pagamento/sucesso", requireAuth, asyncHandler(async (req, res) => {
         <a class="btn btn-primary" href="/">Extrair agora</a>
         <a class="btn btn-outline" href="/dashboard">Dashboard</a>
       </div>
-    </div>`, req.user, sub));
+    </div>`, req.user, sub, req.csrfTokenValue));
 }));
 
 app.get("/pagamento/pendente", requireAuth, (req, res) => {
@@ -820,7 +1582,7 @@ app.get("/pagamento/pendente", requireAuth, (req, res) => {
         ⏳ Pagamento em análise. Assim que aprovado, seu plano será ativado automaticamente.
       </div>
       <a class="btn btn-outline" href="/dashboard">Ver dashboard</a>
-    </div>`, req.user, null));
+    </div>`, req.user, null, req.csrfTokenValue));
 });
 
 app.get("/pagamento/falha", requireAuth, (req, res) => {
@@ -830,24 +1592,32 @@ app.get("/pagamento/falha", requireAuth, (req, res) => {
         ❌ Pagamento não aprovado. Tente novamente com outro método de pagamento.
       </div>
       <a class="btn btn-primary" href="/planos">Tentar novamente</a>
-    </div>`, req.user, null));
+    </div>`, req.user, null, req.csrfTokenValue));
 });
 
 // Mercado Pago webhook
 app.post("/pagamento/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    if (!isMercadoPagoWebhookValid(req)) {
+      return res.sendStatus(401);
+    }
+
+    const body = Buffer.isBuffer(req.body)
+      ? JSON.parse(req.body.toString("utf8"))
+      : typeof req.body === "string"
+        ? JSON.parse(req.body)
+        : req.body;
     if (body?.type !== "payment") return res.sendStatus(200);
 
-    const paymentId = body?.data?.id;
+    const paymentId = body?.data?.id || req.query["data.id"];
     if (!paymentId || !mpClient) return res.sendStatus(200);
 
     const paymentApi = new Payment(mpClient);
     const payment = await paymentApi.get({ id: paymentId });
 
-    if (payment.status === "approved") {
-      const txId = Number(payment.external_reference);
-      if (txId) await approveTransaction(txId, String(paymentId));
+    const txId = Number(payment.external_reference);
+    if (txId) {
+      await syncPaymentStatus(txId, payment);
     }
     res.sendStatus(200);
   } catch (err) {
@@ -857,7 +1627,7 @@ app.post("/pagamento/webhook", express.raw({ type: "application/json" }), async 
 });
 
 // Extractor (requires auth + active plan)
-app.post("/extrair", upload.single("pdf"), async (req, res) => {
+app.post("/extrair", extractorLimiter, requireApiAuth, requireCsrf, upload.single("pdf"), async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ ok: false, erro: "Login necessário. Acesse /login." });
     if (!req.file) return res.status(400).json({ ok: false, erro: "Nenhum arquivo enviado." });
@@ -892,13 +1662,26 @@ app.post("/extrair", upload.single("pdf"), async (req, res) => {
 });
 
 // Download
-app.post("/baixar/:format", async (req, res) => {
+app.post("/baixar/:format", downloadLimiter, requireApiAuth, requireCsrf, async (req, res) => {
   try {
     const colunas = Array.isArray(req.body?.colunas) ? req.body.colunas : ["ENDEREÇO", "BAIRRO", "CEP"];
     const linhas = Array.isArray(req.body?.linhas) ? req.body.linhas : [];
     const name = sanitizeDownloadName(req.body?.nome);
 
     if (!linhas.length) return res.status(400).json({ ok: false, erro: "Nenhum dado informado para download." });
+    if (colunas.length > 10 || linhas.length > 10000) {
+      return res.status(400).json({ ok: false, erro: "Arquivo acima do limite permitido." });
+    }
+    for (const row of linhas) {
+      if (!Array.isArray(row) || row.length > 10) {
+        return res.status(400).json({ ok: false, erro: "Formato de linhas invÃ¡lido." });
+      }
+      for (const cell of row) {
+        if (String(cell ?? "").length > 512) {
+          return res.status(400).json({ ok: false, erro: "ConteÃºdo acima do limite permitido." });
+        }
+      }
+    }
 
     if (req.params.format === "xlsx") {
       const buffer = await generateXlsxBuffer(colunas, linhas);
