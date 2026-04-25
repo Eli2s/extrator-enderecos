@@ -37,9 +37,15 @@ async function initSchema(conn) {
       email VARCHAR(191) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
       name VARCHAR(191) NOT NULL DEFAULT '',
+      role VARCHAR(32) NOT NULL DEFAULT 'user',
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uq_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await conn.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'user' AFTER name
   `);
 
   await conn.query(`
@@ -308,6 +314,133 @@ export async function createTransaction(userId, planId, amountBrl, mpPaymentId =
     [userId, planId, mpPaymentId, amountBrl]
   );
   return result.insertId;
+}
+
+export async function listUsersForAdmin(limit = 200) {
+  const db = await getDb();
+  const [rows] = await db.query(
+    `SELECT
+       u.id,
+       u.email,
+       u.name,
+       u.role,
+       u.created_at,
+       COUNT(DISTINCT t.id) AS transaction_count,
+       MAX(t.created_at) AS last_transaction_at,
+       (
+         SELECT p.name
+         FROM subscriptions s
+         JOIN plans p ON p.id = s.plan_id
+         WHERE s.user_id = u.id
+           AND s.status = 'active'
+           AND (s.expires_at IS NULL OR s.expires_at > NOW())
+           AND (s.credits_remaining IS NULL OR s.credits_remaining > 0)
+         ORDER BY s.id DESC
+         LIMIT 1
+       ) AS active_plan_name,
+       (
+         SELECT s.credits_remaining
+         FROM subscriptions s
+         WHERE s.user_id = u.id
+           AND s.status = 'active'
+           AND (s.expires_at IS NULL OR s.expires_at > NOW())
+           AND (s.credits_remaining IS NULL OR s.credits_remaining > 0)
+         ORDER BY s.id DESC
+         LIMIT 1
+       ) AS active_credits_remaining,
+       (
+         SELECT s.expires_at
+         FROM subscriptions s
+         WHERE s.user_id = u.id
+           AND s.status = 'active'
+           AND (s.expires_at IS NULL OR s.expires_at > NOW())
+           AND (s.credits_remaining IS NULL OR s.credits_remaining > 0)
+         ORDER BY s.id DESC
+         LIMIT 1
+       ) AS active_expires_at
+     FROM users u
+     LEFT JOIN transactions t ON t.user_id = u.id
+     GROUP BY u.id, u.email, u.name, u.role, u.created_at
+     ORDER BY u.created_at DESC
+     LIMIT ?`,
+    [Number(limit)]
+  );
+  return rows.map(normalizeRow);
+}
+
+export async function ensureUserRole(userId, role) {
+  const db = await getDb();
+  await db.query(
+    "UPDATE users SET role = ? WHERE id = ?",
+    [String(role || "user"), userId]
+  );
+}
+
+export async function addCreditsToUser(userId, credits) {
+  const safeCredits = Number(credits);
+  if (!Number.isInteger(safeCredits) || safeCredits < 1 || safeCredits > 10000) {
+    throw new Error("Quantidade de creditos invalida.");
+  }
+
+  const db = await getDb();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.query(
+      `SELECT id, credits_remaining
+       FROM subscriptions
+       WHERE user_id = ?
+         AND status = 'active'
+         AND credits_remaining IS NOT NULL
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY id DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [userId]
+    );
+
+    const current = rows[0];
+    if (current) {
+      await conn.query(
+        `UPDATE subscriptions
+         SET credits_remaining = credits_remaining + ?
+         WHERE id = ?`,
+        [safeCredits, current.id]
+      );
+    } else {
+      await conn.query(
+        `INSERT INTO subscriptions (user_id, plan_id, expires_at, credits_remaining, status)
+         VALUES (?, 'avulso_1', NULL, ?, 'active')`,
+        [userId, safeCredits]
+      );
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+export async function deleteUserForAdmin(userId) {
+  const db = await getDb();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM usage_logs WHERE user_id = ?", [userId]);
+    await conn.query("DELETE FROM transactions WHERE user_id = ?", [userId]);
+    await conn.query("DELETE FROM subscriptions WHERE user_id = ?", [userId]);
+    await conn.query("DELETE FROM users WHERE id = ? AND role <> 'admin'", [userId]);
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 export async function getTransactionById(txId) {

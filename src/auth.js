@@ -1,5 +1,15 @@
 import bcrypt from "bcryptjs";
-import { getDb } from "./db.js";
+import { ensureUserRole, getDb } from "./db.js";
+import {
+  EMAIL_MAX_LENGTH,
+  NAME_MAX_LENGTH,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  isValidEmail,
+  isValidPasswordLength,
+  normalizeEmailAddress,
+  normalizeTextInput,
+} from "./validation.js";
 
 const SALT_ROUNDS = 10;
 
@@ -11,14 +21,26 @@ export async function verifyPassword(plain, hash) {
   return bcrypt.compare(plain, hash);
 }
 
-export async function createUser(email, plainPassword, name = "") {
+export async function createUser(email, plainPassword, name = "", role = "user") {
+  const normalizedEmail = normalizeEmailAddress(email);
+  const normalizedName = normalizeTextInput(name, NAME_MAX_LENGTH);
+  if (!normalizedName) {
+    throw Object.assign(new Error("Informe seu nome."), { status: 400 });
+  }
+  if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+    throw Object.assign(new Error("Informe um e-mail valido."), { status: 400 });
+  }
+  if (!isValidPasswordLength(plainPassword)) {
+    throw Object.assign(new Error(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`), { status: 400 });
+  }
+
   const hash = await hashPassword(plainPassword);
   const db = await getDb();
 
   try {
     const [result] = await db.query(
-      "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)",
-      [email.toLowerCase().trim(), hash, name.trim()]
+      "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)",
+      [normalizedEmail.slice(0, EMAIL_MAX_LENGTH), hash, normalizedName, role === "admin" ? "admin" : "user"]
     );
     return getUserById(result.insertId);
   } catch (err) {
@@ -30,20 +52,28 @@ export async function createUser(email, plainPassword, name = "") {
 }
 
 export async function getUserByEmail(email) {
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+    return null;
+  }
   const db = await getDb();
   const [rows] = await db.query(
     "SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1",
-    [email.toLowerCase().trim()]
+    [normalizedEmail]
   );
   const user = rows[0];
   return user ? safeUser(user) : null;
 }
 
 export async function loginUser(email, plainPassword) {
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (!normalizedEmail || !isValidEmail(normalizedEmail)) {
+    throw Object.assign(new Error("Informe um e-mail valido."), { status: 400 });
+  }
   const db = await getDb();
   const [rows] = await db.query(
     "SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1",
-    [email.toLowerCase().trim()]
+    [normalizedEmail]
   );
   const user = rows[0];
 
@@ -66,12 +96,31 @@ export async function getUserById(id) {
 }
 
 export async function updateUserPassword(userId, plainPassword) {
+  if (!isValidPasswordLength(plainPassword)) {
+    throw Object.assign(new Error(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`), { status: 400 });
+  }
   const hash = await hashPassword(plainPassword);
   const db = await getDb();
   await db.query(
     "UPDATE users SET password_hash = ? WHERE id = ?",
     [hash, userId]
   );
+}
+
+export async function ensureAdminUser(email, plainPassword, name = "Administrador") {
+  const existing = await getUserByEmail(email);
+  if (!existing) {
+    return createUser(email, plainPassword, name, "admin");
+  }
+
+  await updateUserPassword(existing.id, plainPassword);
+  await ensureUserRole(existing.id, "admin");
+  const db = await getDb();
+  await db.query(
+    "UPDATE users SET name = ? WHERE id = ?",
+    [normalizeTextInput(name, NAME_MAX_LENGTH), existing.id]
+  );
+  return getUserById(existing.id);
 }
 
 function safeUser(user) {
@@ -87,4 +136,10 @@ export function requireAuth(req, res, next) {
 
 export function requirePlan(req, res, next) {
   next();
+}
+
+export function requireAdmin(req, res, next) {
+  if (req.user?.role === "admin") return next();
+  if (req.accepts("html")) return res.status(403).redirect("/");
+  return res.status(403).json({ ok: false, erro: "Acesso restrito ao administrador." });
 }

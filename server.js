@@ -24,8 +24,23 @@ import {
   getTransactionById,
   updateTransactionStatus,
   getMysqlPoolConfig,
+  listUsersForAdmin,
+  addCreditsToUser,
+  deleteUserForAdmin,
 } from "./src/db.js";
-import { createUser, getUserByEmail, loginUser, getUserById, requireAuth, updateUserPassword } from "./src/auth.js";
+import { createUser, ensureAdminUser, getUserByEmail, loginUser, getUserById, requireAdmin, requireAuth, updateUserPassword } from "./src/auth.js";
+import {
+  CPF_LENGTH,
+  DOWNLOAD_NAME_MAX_LENGTH,
+  EMAIL_MAX_LENGTH,
+  NAME_MAX_LENGTH,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  isValidEmail,
+  isValidPasswordLength,
+  isWithinMaxLength,
+  normalizeEmailAddress,
+} from "./src/validation.js";
 
 const runtimeEnv = process.env.NODE_ENV || "development";
 dotenv.config({ path: runtimeEnv === "production" ? ".env.production" : ".env.local" });
@@ -157,6 +172,9 @@ const MP_PUBLIC_KEY = process.env.MP_PUBLIC_KEY || "";
 const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || "";
 const MP_WEBHOOK_TOLERANCE_MS = Number(process.env.MP_WEBHOOK_TOLERANCE_MS || 5 * 60 * 1000);
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+const ADMIN_EMAIL = normalizeEmailAddress(process.env.ADMIN_EMAIL || "");
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const ADMIN_NAME = normalizeTextField(process.env.ADMIN_NAME || "Administrador", NAME_MAX_LENGTH);
 const mpClient = MP_TOKEN ? new MercadoPagoConfig({ accessToken: MP_TOKEN }) : null;
 assertServerConfig();
 
@@ -184,6 +202,10 @@ function assertServerConfig() {
 
   if (!isProduction && MP_TOKEN && !MP_WEBHOOK_SECRET) {
     console.warn("MP_WEBHOOK_SECRET nao configurado; em desenvolvimento o webhook sera aceito sem assinatura.");
+  }
+
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+    console.warn("ADMIN_EMAIL ou ADMIN_PASSWORD nao configurados; painel admin desabilitado.");
   }
 }
 
@@ -420,6 +442,7 @@ const CSS = `
 function topbar(user, sub, csrfToken = "") {
   const right = user
     ? `<a class="topbar-link" href="/planos">Planos</a>
+       ${user.role === "admin" ? `<a class="topbar-link" href="/admin">Admin</a>` : ""}
        <a class="topbar-link" href="/conta/acesso">Acesso</a>
        <a class="topbar-link" href="/dashboard">${esc(user.name || user.email)}</a>
        <form method="POST" action="/auth/logout" style="display:inline">
@@ -692,11 +715,11 @@ function loginHtml(error, ok, csrfToken) {
         ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="email">E-mail</label>
-          <input class="form-input" type="email" id="email" name="email" required autocomplete="email">
+          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" maxlength="${EMAIL_MAX_LENGTH}">
         </div>
         <div class="form-group">
           <label for="password">Senha</label>
-          <input class="form-input" type="password" id="password" name="password" required autocomplete="current-password">
+          <input class="form-input" type="password" id="password" name="password" required autocomplete="current-password" minlength="${PASSWORD_MIN_LENGTH}" maxlength="${PASSWORD_MAX_LENGTH}">
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Entrar</button>
       </form>
@@ -720,15 +743,15 @@ function registerHtml(error, csrfToken) {
         ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="name">Nome</label>
-          <input class="form-input" type="text" id="name" name="name" required autocomplete="name">
+          <input class="form-input" type="text" id="name" name="name" required autocomplete="name" maxlength="${NAME_MAX_LENGTH}">
         </div>
         <div class="form-group">
           <label for="email">E-mail</label>
-          <input class="form-input" type="email" id="email" name="email" required autocomplete="email">
+          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" maxlength="${EMAIL_MAX_LENGTH}">
         </div>
         <div class="form-group">
           <label for="password">Senha</label>
-          <input class="form-input" type="password" id="password" name="password" required autocomplete="new-password" minlength="8">
+          <input class="form-input" type="password" id="password" name="password" required autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" maxlength="${PASSWORD_MAX_LENGTH}">
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Criar conta</button>
       </form>
@@ -753,11 +776,11 @@ function guestCheckoutHtml(plan, error, values, csrfToken) {
         ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="name">Nome</label>
-          <input class="form-input" type="text" id="name" name="name" required autocomplete="name" value="${esc(values?.name || "")}">
+          <input class="form-input" type="text" id="name" name="name" required autocomplete="name" maxlength="${NAME_MAX_LENGTH}" value="${esc(values?.name || "")}">
         </div>
         <div class="form-group">
           <label for="email">E-mail</label>
-          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" value="${esc(values?.email || "")}">
+          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" maxlength="${EMAIL_MAX_LENGTH}" value="${esc(values?.email || "")}">
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Continuar para pagamento</button>
       </form>
@@ -778,11 +801,11 @@ function accountAccessHtml(user, error, ok, csrfToken) {
         ${hiddenCsrfInput(csrfToken)}
         <div class="form-group">
           <label for="password">Nova senha</label>
-          <input class="form-input" type="password" id="password" name="password" required autocomplete="new-password" minlength="8">
+          <input class="form-input" type="password" id="password" name="password" required autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" maxlength="${PASSWORD_MAX_LENGTH}">
         </div>
         <div class="form-group">
           <label for="confirmPassword">Confirmar senha</label>
-          <input class="form-input" type="password" id="confirmPassword" name="confirmPassword" required autocomplete="new-password" minlength="8">
+          <input class="form-input" type="password" id="confirmPassword" name="confirmPassword" required autocomplete="new-password" minlength="${PASSWORD_MIN_LENGTH}" maxlength="${PASSWORD_MAX_LENGTH}">
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Salvar senha</button>
       </form>
@@ -892,6 +915,88 @@ function dashboardHtml(user, sub, logs, csrfToken) {
   </div>`, user, sub, csrfToken);
 }
 
+function adminHtml(user, users, message, error, csrfToken) {
+  const rows = users.length
+    ? users.map((item) => {
+      const activePlan = item.active_plan_name || "Sem plano";
+      const credits = !item.active_plan_name
+        ? "—"
+        : item.active_credits_remaining === null || item.active_credits_remaining === undefined
+        ? "Ilimitado"
+        : String(item.active_credits_remaining);
+      const expiresAt = !item.active_plan_name
+        ? "—"
+        : item.active_expires_at ? formatDateOnly(item.active_expires_at) : "Sem validade";
+      return `<tr>
+        <td>${item.id}</td>
+        <td>
+          <div style="font-weight:700">${esc(item.name || "Sem nome")}</div>
+          <div style="font-size:12px;color:var(--t3)">${esc(item.email)}</div>
+        </td>
+        <td><span class="badge ${item.role === "admin" ? "badge-ok" : "badge-neutral"}">${esc(item.role)}</span></td>
+        <td>
+          <div>${esc(activePlan)}</div>
+          <div style="font-size:12px;color:var(--t3)">Créditos: ${esc(credits)} | Validade: ${esc(expiresAt)}</div>
+        </td>
+        <td>
+          <div>${String(item.transaction_count || 0)} transações</div>
+          <div style="font-size:12px;color:var(--t3)">Cadastro: ${formatDateOnly(item.created_at)}</div>
+        </td>
+        <td>
+          <form method="POST" action="/admin/users/${item.id}/credits" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+            ${hiddenCsrfInput(csrfToken)}
+            <input class="form-input" type="number" name="credits" min="1" max="10000" value="1" style="max-width:100px">
+            <button type="submit" class="btn btn-outline">Adicionar créditos</button>
+          </form>
+          ${item.role === "admin"
+            ? `<span class="badge badge-neutral">Conta admin protegida</span>`
+            : `<form method="POST" action="/admin/users/${item.id}/delete" onsubmit="return confirm('Apagar este usuário? Esta ação remove histórico, transações e assinaturas.');">
+                 ${hiddenCsrfInput(csrfToken)}
+                 <button type="submit" class="btn btn-outline">Apagar usuário</button>
+               </form>`
+          }
+        </td>
+      </tr>`;
+    }).join("")
+    : `<tr><td colspan="6" style="text-align:center;color:var(--t3);padding:28px">Nenhum usuário encontrado.</td></tr>`;
+
+  return shell("Admin", `
+  <div class="page">
+    <div style="width:100%;max-width:1100px">
+      <h2 style="font-size:20px;font-weight:700;margin-bottom:4px">Painel administrativo</h2>
+      <p style="color:var(--t2);font-size:14px">Gerencie contas registradas, acompanhe o status atual e ajuste créditos manualmente.</p>
+    </div>
+    ${message ? `<div class="alert alert-ok">${esc(message)}</div>` : ""}
+    ${error ? `<div class="alert alert-warn">${esc(error)}</div>` : ""}
+    <div class="dash-grid">
+      <div class="stat-card">
+        <div class="stat-label">Usuários</div>
+        <div class="stat-value">${users.length}</div>
+        <div class="stat-sub">contas listadas</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Admins</div>
+        <div class="stat-value">${users.filter((item) => item.role === "admin").length}</div>
+        <div class="stat-sub">contas com acesso total</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Com plano ativo</div>
+        <div class="stat-value">${users.filter((item) => item.active_plan_name).length}</div>
+        <div class="stat-sub">usuários com acesso atual</div>
+      </div>
+    </div>
+    <div style="width:100%;max-width:1100px">
+      <div class="section-title">Usuários cadastrados</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Conta</th><th>Papel</th><th>Plano atual</th><th>Resumo</th><th>Ações</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>`, user, null, csrfToken);
+}
+
 // ── Page: Simulação pagamento ──────────────────────────────────────────────────
 function simHtml(user, plan, txId, csrfToken) {
   return shell("Confirmar Pagamento", `
@@ -988,6 +1093,7 @@ function checkoutHtml(user, plan, txId, csrfToken) {
     const cardPanel = document.getElementById("cardPanel");
     const tabPix = document.getElementById("tabPix");
     const tabCard = document.getElementById("tabCard");
+    const pixCpf = document.getElementById("pixCpf");
     const payDot = document.getElementById("payDot");
     const payStatus = document.getElementById("payStatus");
     const pixBtn = document.getElementById("pixBtn");
@@ -997,6 +1103,13 @@ function checkoutHtml(user, plan, txId, csrfToken) {
     const pixCode = document.getElementById("pixCode");
     const pixTicketLink = document.getElementById("pixTicketLink");
     let pixPaymentId = null;
+
+    if (pixCpf) {
+      pixCpf.maxLength = ${CPF_LENGTH};
+      pixCpf.addEventListener("input", () => {
+        pixCpf.value = pixCpf.value.replace(/\\D/g, "").slice(0, ${CPF_LENGTH});
+      });
+    }
 
     function setStatus(message, tone = "") {
       payStatus.textContent = message;
@@ -1021,7 +1134,7 @@ function checkoutHtml(user, plan, txId, csrfToken) {
     tabCard.addEventListener("click", () => toggleTab("card"));
 
     pixBtn.addEventListener("click", async () => {
-      const identificationNumber = document.getElementById("pixCpf").value.replace(/\\D/g, "");
+      const identificationNumber = (pixCpf?.value || "").replace(/\\D/g, "");
       if (identificationNumber.length !== 11) {
         setStatus("Informe um CPF válido para gerar o Pix.", "error");
         return;
@@ -1079,7 +1192,8 @@ function sanitizeDownloadName(name) {
     .normalize("NFKD")
     .replace(/[^\w.-]+/g, "_")
     .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "") || "enderecos";
+    .replace(/^_+|_+$/g, "")
+    .slice(0, DOWNLOAD_NAME_MAX_LENGTH) || "enderecos";
 }
 
 function hiddenCsrfInput(csrfToken) {
@@ -1138,6 +1252,19 @@ function normalizeTextField(value, maxLength) {
   return String(value ?? "").trim().slice(0, maxLength);
 }
 
+function validateEmailField(email) {
+  return isValidEmail(email);
+}
+
+function validatePasswordField(password) {
+  return isValidPasswordLength(password);
+}
+
+async function initializeAdminUser() {
+  if (!ADMIN_EMAIL || !ADMIN_PASSWORD) return null;
+  return ensureAdminUser(ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME);
+}
+
 function formatDateOnly(value) {
   if (!value) return "";
   const date = value instanceof Date ? value : new Date(value);
@@ -1165,12 +1292,12 @@ function buildNotificationUrl() {
 }
 
 function buildPayerFromUser(user, overrides = {}) {
-  const email = normalizeTextField(overrides.email || user?.email, 254).toLowerCase();
+  const email = normalizeEmailAddress(overrides.email || user?.email);
   const docType = normalizeTextField(overrides.identificationType || "CPF", 20).toUpperCase();
   const docNumber = String(overrides.identificationNumber || "").replace(/\D/g, "").slice(0, 20);
   const names = splitFullName(overrides.name || user?.name || user?.email);
   return {
-    email,
+    email: validateEmailField(email) ? email : "",
     first_name: names.firstName,
     last_name: names.lastName,
     identification: docNumber ? { type: docType, number: docNumber } : undefined,
@@ -1351,9 +1478,13 @@ app.get("/login", (req, res) => {
 
 app.post("/auth/login", authLimiter, requireCsrf, async (req, res) => {
   try {
-    const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+    const rawEmail = req.body?.email;
+    const email = normalizeEmailAddress(rawEmail);
     const password = String(req.body?.password ?? "");
     if (!email || !password) return res.type("html").send(loginHtml("Preencha todos os campos.", null, req.csrfTokenValue));
+    if (!isWithinMaxLength(rawEmail, EMAIL_MAX_LENGTH)) return res.type("html").send(loginHtml(`O e-mail deve ter no maximo ${EMAIL_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
+    if (!validateEmailField(email)) return res.type("html").send(loginHtml("Informe um e-mail valido.", null, req.csrfTokenValue));
+    if (!validatePasswordField(password)) return res.type("html").send(loginHtml(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
     const user = await loginUser(email, password);
     await establishUserSession(req, user.id);
     const sub = await getActiveSubscription(user.id);
@@ -1370,11 +1501,16 @@ app.get("/register", (req, res) => {
 
 app.post("/auth/register", authLimiter, requireCsrf, async (req, res) => {
   try {
-    const name = normalizeTextField(req.body?.name, 191);
-    const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+    const rawName = req.body?.name;
+    const rawEmail = req.body?.email;
+    const name = normalizeTextField(rawName, NAME_MAX_LENGTH);
+    const email = normalizeEmailAddress(rawEmail);
     const password = String(req.body?.password ?? "");
     if (!name || !email || !password) return res.type("html").send(registerHtml("Preencha todos os campos.", req.csrfTokenValue));
-    if (password.length < 8) return res.type("html").send(registerHtml("A senha deve ter ao menos 8 caracteres.", req.csrfTokenValue));
+    if (!isWithinMaxLength(rawName, NAME_MAX_LENGTH)) return res.type("html").send(registerHtml(`O nome deve ter no maximo ${NAME_MAX_LENGTH} caracteres.`, req.csrfTokenValue));
+    if (!isWithinMaxLength(rawEmail, EMAIL_MAX_LENGTH)) return res.type("html").send(registerHtml(`O e-mail deve ter no maximo ${EMAIL_MAX_LENGTH} caracteres.`, req.csrfTokenValue));
+    if (!validateEmailField(email)) return res.type("html").send(registerHtml("Informe um e-mail valido.", req.csrfTokenValue));
+    if (!validatePasswordField(password)) return res.type("html").send(registerHtml(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, req.csrfTokenValue));
     const user = await createUser(email, password, name);
     await establishUserSession(req, user.id);
     res.redirect("/planos");
@@ -1394,8 +1530,11 @@ app.post("/conta/acesso", requireAuth, authLimiter, requireCsrf, async (req, res
     if (!password || !confirmPassword) {
       return res.type("html").send(accountAccessHtml(req.user, "Preencha os dois campos.", null, req.csrfTokenValue));
     }
-    if (password.length < 8) {
-      return res.type("html").send(accountAccessHtml(req.user, "A senha deve ter ao menos 8 caracteres.", null, req.csrfTokenValue));
+    if (!validatePasswordField(password)) {
+      return res.type("html").send(accountAccessHtml(req.user, `A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
+    }
+    if (!validatePasswordField(confirmPassword)) {
+      return res.type("html").send(accountAccessHtml(req.user, `A confirmacao deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
     }
     if (password !== confirmPassword) {
       return res.type("html").send(accountAccessHtml(req.user, "As senhas não conferem.", null, req.csrfTokenValue));
@@ -1441,10 +1580,21 @@ app.post("/checkout-convidado/:planId", authLimiter, paymentLimiter, requireCsrf
   if (!plan) return res.redirect("/planos");
   if (req.user) return res.redirect(`/pagamento/criar/${plan.id}`);
 
-  const name = normalizeTextField(req.body?.name, 191);
-  const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+  const rawName = req.body?.name;
+  const rawEmail = req.body?.email;
+  const name = normalizeTextField(rawName, NAME_MAX_LENGTH);
+  const email = normalizeEmailAddress(rawEmail);
   if (!name || !email) {
     return res.type("html").send(guestCheckoutHtml(plan, "Preencha nome e e-mail.", { name, email }, req.csrfTokenValue));
+  }
+  if (!isWithinMaxLength(rawName, NAME_MAX_LENGTH)) {
+    return res.type("html").send(guestCheckoutHtml(plan, `O nome deve ter no maximo ${NAME_MAX_LENGTH} caracteres.`, { name, email }, req.csrfTokenValue));
+  }
+  if (!isWithinMaxLength(rawEmail, EMAIL_MAX_LENGTH)) {
+    return res.type("html").send(guestCheckoutHtml(plan, `O e-mail deve ter no maximo ${EMAIL_MAX_LENGTH} caracteres.`, { name, email }, req.csrfTokenValue));
+  }
+  if (!validateEmailField(email)) {
+    return res.type("html").send(guestCheckoutHtml(plan, "Informe um e-mail valido.", { name, email }, req.csrfTokenValue));
   }
 
   const existingUser = await getUserByEmail(email);
@@ -1473,6 +1623,52 @@ app.get("/dashboard", requireAuth, asyncHandler(async (req, res) => {
   const sub = await getActiveSubscription(req.user.id);
   const logs = await getUsageLogs(req.user.id);
   res.type("html").send(dashboardHtml(req.user, sub, logs, req.csrfTokenValue));
+}));
+
+app.get("/admin", requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+  const users = await listUsersForAdmin();
+  res.type("html").send(adminHtml(req.user, users, req.query.ok, req.query.erro, req.csrfTokenValue));
+}));
+
+app.post("/admin/users/:userId/credits", requireAuth, requireAdmin, authLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  const targetUserId = Number(req.params.userId);
+  const credits = Number(req.body?.credits);
+
+  if (!Number.isInteger(targetUserId) || targetUserId < 1) {
+    return res.redirect("/admin?erro=Usuario+invalido");
+  }
+  if (!Number.isInteger(credits) || credits < 1 || credits > 10000) {
+    return res.redirect("/admin?erro=Quantidade+de+creditos+invalida");
+  }
+
+  const targetUser = await getUserById(targetUserId);
+  if (!targetUser) {
+    return res.redirect("/admin?erro=Usuario+nao+encontrado");
+  }
+
+  await addCreditsToUser(targetUserId, credits);
+  return res.redirect(`/admin?ok=Creditos+adicionados+para+${encodeURIComponent(targetUser.email)}`);
+}));
+
+app.post("/admin/users/:userId/delete", requireAuth, requireAdmin, authLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  const targetUserId = Number(req.params.userId);
+  if (!Number.isInteger(targetUserId) || targetUserId < 1) {
+    return res.redirect("/admin?erro=Usuario+invalido");
+  }
+  if (targetUserId === Number(req.user.id)) {
+    return res.redirect("/admin?erro=Voce+nao+pode+apagar+sua+propria+conta+admin");
+  }
+
+  const targetUser = await getUserById(targetUserId);
+  if (!targetUser) {
+    return res.redirect("/admin?erro=Usuario+nao+encontrado");
+  }
+  if (targetUser.role === "admin") {
+    return res.redirect("/admin?erro=Contas+admin+nao+podem+ser+apagadas+por+esta+tela");
+  }
+
+  await deleteUserForAdmin(targetUserId);
+  return res.redirect(`/admin?ok=Usuario+${encodeURIComponent(targetUser.email)}+apagado`);
 }));
 
 // Payment — create preference
@@ -1596,7 +1792,7 @@ app.post("/pagamento/transparente/pix/:planId", requireAuth, paymentLimiter, req
   if (tx.status === "approved") {
     return res.status(409).json({ ok: false, erro: "Esta transacao ja foi aprovada." });
   }
-  if (identificationNumber.length !== 11) {
+  if (identificationNumber.length !== CPF_LENGTH) {
     return res.status(400).json({ ok: false, erro: "Informe um CPF valido." });
   }
 
@@ -1659,6 +1855,9 @@ app.post("/pagamento/transparente/cartao/:planId", requireAuth, paymentLimiter, 
 
   if (!token || !paymentMethodId || !Number.isFinite(installments) || installments < 1) {
     return res.status(400).json({ ok: false, erro: "Dados do cartao invalidos." });
+  }
+  if (installments > 24) {
+    return res.status(400).json({ ok: false, erro: "Numero de parcelas invalido." });
   }
   if (!payer.email || !payer.identification?.number) {
     return res.status(400).json({ ok: false, erro: "E-mail e documento do pagador sao obrigatorios." });
@@ -1915,6 +2114,20 @@ app.use((err, req, res, next) => {
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "0.0.0.0";
-app.listen(port, host, () => {
-  console.log(`Extrator GAN SaaS ouvindo em http://${host}:${port}`);
+
+async function startServer() {
+  await getDb();
+  const adminUser = await initializeAdminUser();
+  if (adminUser) {
+    console.log(`Conta admin pronta para ${adminUser.email}`);
+  }
+
+  app.listen(port, host, () => {
+    console.log(`Extrator GAN SaaS ouvindo em http://${host}:${port}`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error("Falha ao iniciar servidor", err);
+  process.exit(1);
 });
