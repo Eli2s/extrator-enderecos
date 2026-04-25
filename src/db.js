@@ -1,13 +1,5 @@
 import mysql from "mysql2/promise";
 
-const {
-  DB_HOST,
-  DB_PORT = "3306",
-  DB_NAME,
-  DB_USER,
-  DB_PASSWORD,
-} = process.env;
-
 let pool = null;
 let initPromise = null;
 
@@ -141,11 +133,11 @@ export async function getDb() {
 export function getMysqlPoolConfig() {
   assertEnv();
   return {
-    host: DB_HOST,
-    port: Number(DB_PORT),
-    user: DB_USER,
-    password: DB_PASSWORD,
-    database: DB_NAME,
+    host: process.env.DB_HOST,
+    port: Number(process.env.DB_PORT || "3306"),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -199,6 +191,79 @@ export async function activateSubscription(userId, planId, conn = null) {
   );
 
   return result.insertId;
+}
+
+export async function activateOrExtendSubscription(userId, planId, conn = null) {
+  const executor = conn || await getDb();
+  const plan = await getPlanById(planId);
+  if (!plan) throw new Error("Plano não encontrado");
+
+  if (!plan.duration_days) {
+    return activateSubscription(userId, planId, conn);
+  }
+
+  const [rows] = await executor.query(
+    `SELECT id, expires_at
+     FROM subscriptions
+     WHERE user_id = ? AND plan_id = ? AND status = 'active'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [userId, planId]
+  );
+
+  const current = rows[0];
+  if (!current) {
+    return activateSubscription(userId, planId, conn);
+  }
+
+  const currentExpiry = current.expires_at ? new Date(current.expires_at) : new Date();
+  const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
+  const nextExpiry = new Date(baseDate.getTime() + plan.duration_days * 86400000);
+
+  await executor.query(
+    `UPDATE subscriptions
+     SET expires_at = ?, status = 'active'
+     WHERE id = ?`,
+    [nextExpiry, current.id]
+  );
+
+  return current.id;
+}
+
+export async function syncRecurringSubscriptionPeriod(userId, planId, expiresAt, conn = null) {
+  const executor = conn || await getDb();
+  const plan = await getPlanById(planId);
+  if (!plan) throw new Error("Plano não encontrado");
+
+  const safeExpiresAt = expiresAt ? new Date(expiresAt) : null;
+
+  const [rows] = await executor.query(
+    `SELECT id
+     FROM subscriptions
+     WHERE user_id = ? AND plan_id = ? AND status = 'active'
+     ORDER BY id DESC
+     LIMIT 1`,
+    [userId, planId]
+  );
+
+  const current = rows[0];
+  if (!current) {
+    const [result] = await executor.query(
+      `INSERT INTO subscriptions (user_id, plan_id, expires_at, credits_remaining, status)
+       VALUES (?, ?, ?, ?, 'active')`,
+      [userId, planId, safeExpiresAt, plan.credits]
+    );
+    return result.insertId;
+  }
+
+  await executor.query(
+    `UPDATE subscriptions
+     SET expires_at = ?, status = 'active'
+     WHERE id = ?`,
+    [safeExpiresAt, current.id]
+  );
+
+  return current.id;
 }
 
 export async function consumeCredit(userId, subId) {
@@ -298,6 +363,47 @@ export async function approveTransaction(txId, options = {}) {
     );
 
     const subId = await activateSubscription(tx.user_id, tx.plan_id, conn);
+    await conn.commit();
+    return subId;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+export async function authorizeRecurringTransaction(txId, options = {}) {
+  const {
+    mpPaymentId = null,
+    expectedUserId = null,
+    expectedPlanId = null,
+    expiresAt = null,
+  } = options;
+  const db = await getDb();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.query("SELECT * FROM transactions WHERE id = ? LIMIT 1 FOR UPDATE", [txId]);
+    const tx = rows[0];
+    if (!tx) throw new Error("Transação não encontrada");
+
+    if (expectedUserId !== null && Number(tx.user_id) !== Number(expectedUserId)) {
+      throw new Error("Transação inválida para este usuário");
+    }
+    if (expectedPlanId !== null && String(tx.plan_id) !== String(expectedPlanId)) {
+      throw new Error("Transação inválida para este plano");
+    }
+
+    await conn.query(
+      `UPDATE transactions
+       SET status = 'authorized', mp_payment_id = COALESCE(?, mp_payment_id)
+       WHERE id = ?`,
+      [mpPaymentId, txId]
+    );
+
+    const subId = await syncRecurringSubscriptionPeriod(tx.user_id, tx.plan_id, expiresAt, conn);
     await conn.commit();
     return subId;
   } catch (err) {

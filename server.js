@@ -1,4 +1,4 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import crypto from "node:crypto";
 import express from "express";
 import multer from "multer";
@@ -20,12 +20,15 @@ import {
   getUsageLogs,
   createTransaction,
   approveTransaction,
+  authorizeRecurringTransaction,
   getTransactionById,
   updateTransactionStatus,
   getMysqlPoolConfig,
 } from "./src/db.js";
-import { createUser, loginUser, getUserById, requireAuth } from "./src/auth.js";
+import { createUser, getUserByEmail, loginUser, getUserById, requireAuth, updateUserPassword } from "./src/auth.js";
 
+const runtimeEnv = process.env.NODE_ENV || "development";
+dotenv.config({ path: runtimeEnv === "production" ? ".env.production" : ".env.local" });
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -417,6 +420,7 @@ const CSS = `
 function topbar(user, sub, csrfToken = "") {
   const right = user
     ? `<a class="topbar-link" href="/planos">Planos</a>
+       <a class="topbar-link" href="/conta/acesso">Acesso</a>
        <a class="topbar-link" href="/dashboard">${esc(user.name || user.email)}</a>
        <form method="POST" action="/auth/logout" style="display:inline">
          ${hiddenCsrfInput(csrfToken)}
@@ -463,7 +467,7 @@ function landingHtml(user, sub) {
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
       <a class="btn btn-primary" href="/planos">Ver planos</a>
-      <a class="btn btn-outline" href="/register">Criar conta grátis</a>
+      <a class="btn btn-outline" href="/checkout-convidado/avulso_1">Comprar sem login</a>
     </div>
     <div class="plans-grid" style="margin-top:8px">
       <div class="plan-card">
@@ -681,7 +685,7 @@ function loginHtml(error, ok, csrfToken) {
   <div class="form-page">
     <div class="form-card">
       <h1>Entrar</h1>
-      <p class="sub">Acesse sua conta para extrair endereços.</p>
+      <p class="sub">Entre com e-mail e senha. Se preferir, você também pode comprar e usar sem login prévio.</p>
       ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
       ${ok ? `<div class="form-ok">${esc(ok)}</div>` : ""}
       <form method="POST" action="/auth/login">
@@ -696,7 +700,10 @@ function loginHtml(error, ok, csrfToken) {
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Entrar</button>
       </form>
-      <p class="form-foot">Não tem conta? <a href="/register">Criar conta</a></p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
+        <a class="btn btn-outline" href="/register" style="justify-content:center;flex:1">Criar conta</a>
+        <a class="btn btn-outline" href="/planos" style="justify-content:center;flex:1">Comprar sem login</a>
+      </div>
     </div>
   </div>`, null, null, csrfToken);
 }
@@ -730,6 +737,59 @@ function registerHtml(error, csrfToken) {
   </div>`, null, null, csrfToken);
 }
 
+function guestCheckoutHtml(plan, error, values, csrfToken) {
+  return shell("Comprar sem login", `
+  <div class="form-page">
+    <div class="form-card" style="max-width:460px">
+      <h1>Comprar sem login</h1>
+      <p class="sub">Informe nome e e-mail. O acesso fica liberado na mesma sessão após o pagamento.</p>
+      ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
+      <div style="background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:20px">
+        <div style="font-size:12px;color:var(--t3);margin-bottom:4px">Plano</div>
+        <div style="font-weight:700">${esc(plan.name)}</div>
+        <div style="font-size:13px;color:var(--t2);margin-top:4px">R$ ${Number(plan.price_brl).toFixed(2).replace(".", ",")}</div>
+      </div>
+      <form method="POST" action="/checkout-convidado/${esc(plan.id)}">
+        ${hiddenCsrfInput(csrfToken)}
+        <div class="form-group">
+          <label for="name">Nome</label>
+          <input class="form-input" type="text" id="name" name="name" required autocomplete="name" value="${esc(values?.name || "")}">
+        </div>
+        <div class="form-group">
+          <label for="email">E-mail</label>
+          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" value="${esc(values?.email || "")}">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Continuar para pagamento</button>
+      </form>
+      <p class="form-foot">Já tem conta? <a href="/login">Entrar</a></p>
+    </div>
+  </div>`, null, null, csrfToken);
+}
+
+function accountAccessHtml(user, error, ok, csrfToken) {
+  return shell("Definir acesso", `
+  <div class="form-page">
+    <div class="form-card">
+      <h1>Definir senha</h1>
+      <p class="sub">Crie uma senha para entrar depois com o e-mail <strong>${esc(user.email)}</strong>.</p>
+      ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
+      ${ok ? `<div class="form-ok">${esc(ok)}</div>` : ""}
+      <form method="POST" action="/conta/acesso">
+        ${hiddenCsrfInput(csrfToken)}
+        <div class="form-group">
+          <label for="password">Nova senha</label>
+          <input class="form-input" type="password" id="password" name="password" required autocomplete="new-password" minlength="8">
+        </div>
+        <div class="form-group">
+          <label for="confirmPassword">Confirmar senha</label>
+          <input class="form-input" type="password" id="confirmPassword" name="confirmPassword" required autocomplete="new-password" minlength="8">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Salvar senha</button>
+      </form>
+    </div>
+  </div>`, user, null, csrfToken);
+}
+
 // ── Page: Planos ───────────────────────────────────────────────────────────────
 function planosHtml(user, sub, plans, csrfToken) {
   const cards = plans.map(p => {
@@ -750,7 +810,7 @@ function planosHtml(user, sub, plans, csrfToken) {
              ${hiddenCsrfInput(csrfToken)}
              <button type="submit" class="btn ${featured ? "btn-primary" : "btn-outline"}" style="width:100%;justify-content:center">Comprar</button>
            </form>`
-        : `<a class="btn ${featured ? "btn-primary" : "btn-outline"}" href="/register" style="justify-content:center;display:flex">Criar conta</a>`
+        : `<a class="btn ${featured ? "btn-primary" : "btn-outline"}" href="/checkout-convidado/${esc(p.id)}" style="justify-content:center;display:flex">Comprar sem login</a>`
       }
     </div>`;
   }).join("\n");
@@ -1226,6 +1286,91 @@ function buildPayerFromUser(user, overrides = {}) {
   };
 }
 
+function isRecurringPlan(plan) {
+  return Number(plan?.duration_days || 0) > 0;
+}
+
+function getRecurringFrequency(plan) {
+  if (String(plan?.id) === "semanal") {
+    return { frequency: 1, frequencyType: "weeks" };
+  }
+  return { frequency: 1, frequencyType: "months" };
+}
+
+async function mercadoPagoRequest(pathname, { method = "GET", body } = {}) {
+  if (!MP_TOKEN) {
+    throw new Error("Mercado Pago nao configurado.");
+  }
+
+  const res = await fetch(`https://api.mercadopago.com${pathname}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${MP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text().catch(() => "");
+    throw new Error(`Mercado Pago API ${method} ${pathname} falhou: ${res.status} ${errorBody}`.slice(0, 500));
+  }
+
+  return res.json();
+}
+
+async function createRecurringCheckout(plan, user, txId) {
+  const { frequency, frequencyType } = getRecurringFrequency(plan);
+  const reason = `Extrator GAN - ${plan.name}`;
+  const startDate = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const response = await mercadoPagoRequest("/preapproval", {
+    method: "POST",
+    body: {
+      reason,
+      payer_email: user.email,
+      external_reference: String(txId),
+      back_url: `${BASE_URL}/pagamento/sucesso?txId=${txId}&recorrente=1`,
+      status: "pending",
+      auto_recurring: {
+        frequency,
+        frequency_type: frequencyType,
+        transaction_amount: Number(plan.price_brl),
+        currency_id: "BRL",
+        start_date: startDate,
+      },
+    },
+  });
+
+  if (!response?.init_point) {
+    throw new Error("Mercado Pago nao retornou link de assinatura.");
+  }
+
+  await updateTransactionStatus(txId, response.status || "pending", String(response.id || ""));
+  return response;
+}
+
+async function syncRecurringSubscriptionStatus(txId, preapprovalId = null) {
+  const tx = await getTransactionById(txId);
+  if (!tx) return { approved: false, status: "not_found" };
+
+  const effectiveId = String(preapprovalId || tx.mp_payment_id || "");
+  if (!effectiveId) return { approved: false, status: "pending" };
+
+  const subscription = await mercadoPagoRequest(`/preapproval/${encodeURIComponent(effectiveId)}`);
+  const status = String(subscription?.status || "pending");
+  const nextPeriodEnd = subscription?.next_payment_date
+    || subscription?.auto_recurring?.end_date
+    || null;
+
+  if (status === "authorized") {
+    await authorizeRecurringTransaction(txId, { mpPaymentId: effectiveId, expiresAt: nextPeriodEnd });
+    return { approved: true, status, subscription };
+  }
+
+  await updateTransactionStatus(txId, status, effectiveId);
+  return { approved: false, status, subscription };
+}
+
 async function syncPaymentStatus(txId, payment) {
   const paymentId = String(payment?.id || "");
   const status = String(payment?.status || "pending");
@@ -1315,6 +1460,33 @@ app.post("/auth/register", authLimiter, requireCsrf, async (req, res) => {
   }
 });
 
+app.get("/conta/acesso", requireAuth, (req, res) => {
+  res.type("html").send(accountAccessHtml(req.user, null, req.query.ok, req.csrfTokenValue));
+});
+
+app.post("/conta/acesso", requireAuth, authLimiter, requireCsrf, async (req, res) => {
+  try {
+    const password = String(req.body?.password ?? "");
+    const confirmPassword = String(req.body?.confirmPassword ?? "");
+    if (!password || !confirmPassword) {
+      return res.type("html").send(accountAccessHtml(req.user, "Preencha os dois campos.", null, req.csrfTokenValue));
+    }
+    if (password.length < 8) {
+      return res.type("html").send(accountAccessHtml(req.user, "A senha deve ter ao menos 8 caracteres.", null, req.csrfTokenValue));
+    }
+    if (password !== confirmPassword) {
+      return res.type("html").send(accountAccessHtml(req.user, "As senhas não conferem.", null, req.csrfTokenValue));
+    }
+    await updateUserPassword(req.user.id, password);
+    if (req.session) {
+      delete req.session.guestCheckout;
+    }
+    return res.redirect("/conta/acesso?ok=Senha+salva+com+sucesso");
+  } catch (err) {
+    return res.type("html").send(accountAccessHtml(req.user, err.message, null, req.csrfTokenValue));
+  }
+});
+
 app.post("/auth/logout", requireCsrf, (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("extrator.sid");
@@ -1334,6 +1506,45 @@ app.get("/planos", asyncHandler(async (req, res) => {
   res.type("html").send(planosHtml(req.user, sub, plans, req.csrfTokenValue));
 }));
 
+app.get("/checkout-convidado/:planId", asyncHandler(async (req, res) => {
+  const plan = await getPlanById(req.params.planId);
+  if (!plan) return res.redirect("/planos");
+  if (req.user) return res.redirect("/planos");
+  return res.type("html").send(guestCheckoutHtml(plan, req.query.erro, { name: "", email: "" }, req.csrfTokenValue));
+}));
+
+app.post("/checkout-convidado/:planId", authLimiter, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  const plan = await getPlanById(req.params.planId);
+  if (!plan) return res.redirect("/planos");
+  if (req.user) return res.redirect(`/pagamento/criar/${plan.id}`);
+
+  const name = normalizeTextField(req.body?.name, 191);
+  const email = normalizeTextField(req.body?.email, 191).toLowerCase();
+  if (!name || !email) {
+    return res.type("html").send(guestCheckoutHtml(plan, "Preencha nome e e-mail.", { name, email }, req.csrfTokenValue));
+  }
+
+  const existingUser = await getUserByEmail(email);
+  if (existingUser) {
+    return res.type("html").send(guestCheckoutHtml(plan, "Este e-mail já possui conta. Faça login para continuar.", { name, email }, req.csrfTokenValue));
+  }
+
+  const generatedPassword = crypto.randomBytes(24).toString("hex");
+  const user = await createUser(email, generatedPassword, name);
+  await establishUserSession(req, user.id);
+  req.session.guestCheckout = true;
+
+  const txId = await createTransaction(user.id, plan.id, plan.price_brl);
+  if (mpClient && isRecurringPlan(plan)) {
+    const recurring = await createRecurringCheckout(plan, user, txId);
+    return res.redirect(recurring.init_point);
+  }
+  if (!mpClient) {
+    return res.redirect(`/pagamento/simulacao/${plan.id}?txId=${txId}`);
+  }
+  return res.redirect(`/checkout/${plan.id}?txId=${txId}`);
+}));
+
 // Dashboard
 app.get("/dashboard", requireAuth, asyncHandler(async (req, res) => {
   const sub = await getActiveSubscription(req.user.id);
@@ -1347,6 +1558,15 @@ app.post("/pagamento/criar/:planId", requireAuth, paymentLimiter, requireCsrf, a
   if (!plan) return res.redirect("/planos");
 
   const txId = await createTransaction(req.user.id, plan.id, plan.price_brl);
+  if (mpClient && isRecurringPlan(plan)) {
+    try {
+      const recurring = await createRecurringCheckout(plan, req.user, txId);
+      return res.redirect(recurring.init_point);
+    } catch (err) {
+      console.error("MP recurring error", err);
+      return res.redirect("/planos?erro=Erro+ao+iniciar+assinatura");
+    }
+  }
 
   if (!mpClient) {
     // simulation mode
@@ -1562,9 +1782,24 @@ app.get("/pagamento/transparente/status/:txId", requireAuth, paymentLimiter, req
 
 // Payment callbacks
 app.get("/pagamento/sucesso", requireAuth, asyncHandler(async (req, res) => {
+  const recurringTxId = Number(req.query.txId);
+  const isRecurringFlow = String(req.query.recorrente || "") === "1";
+  if (isRecurringFlow && recurringTxId) {
+    try {
+      await syncRecurringSubscriptionStatus(recurringTxId);
+    } catch (err) {
+      console.error("Recurring success sync error", err);
+    }
+  }
   const sub = await getActiveSubscription(req.user.id);
+  const guestMessage = req.session?.guestCheckout
+    ? `<div class="alert alert-warn" style="max-width:480px;margin-bottom:16px">
+        Seu acesso já está liberado nesta sessão. Para entrar depois no mesmo e-mail, <a href="/conta/acesso" style="color:inherit;font-weight:700">defina sua senha agora</a>.
+      </div>`
+    : "";
   res.type("html").send(shell("Pagamento aprovado!", `
     <div class="page">
+      ${guestMessage}
       <div class="alert alert-ok" style="max-width:480px">
         ✅ Pagamento aprovado! Seu plano ${sub ? `<strong>${esc(sub.plan_name)}</strong>` : ""} já está ativo.
       </div>
@@ -1607,17 +1842,31 @@ app.post("/pagamento/webhook", express.raw({ type: "application/json" }), async 
       : typeof req.body === "string"
         ? JSON.parse(req.body)
         : req.body;
-    if (body?.type !== "payment") return res.sendStatus(200);
+    const type = String(body?.type || body?.topic || "").toLowerCase();
 
-    const paymentId = body?.data?.id || req.query["data.id"];
-    if (!paymentId || !mpClient) return res.sendStatus(200);
+    if (type === "payment") {
+      const paymentId = body?.data?.id || req.query["data.id"];
+      if (!paymentId || !mpClient) return res.sendStatus(200);
 
-    const paymentApi = new Payment(mpClient);
-    const payment = await paymentApi.get({ id: paymentId });
+      const paymentApi = new Payment(mpClient);
+      const payment = await paymentApi.get({ id: paymentId });
 
-    const txId = Number(payment.external_reference);
-    if (txId) {
-      await syncPaymentStatus(txId, payment);
+      const txId = Number(payment.external_reference);
+      if (txId) {
+        await syncPaymentStatus(txId, payment);
+      }
+      return res.sendStatus(200);
+    }
+
+    if (type === "subscription_preapproval") {
+      const preapprovalId = body?.data?.id || req.query["data.id"];
+      if (!preapprovalId) return res.sendStatus(200);
+
+      const subscription = await mercadoPagoRequest(`/preapproval/${encodeURIComponent(preapprovalId)}`);
+      const txId = Number(subscription?.external_reference);
+      if (txId) {
+        await syncRecurringSubscriptionStatus(txId, preapprovalId);
+      }
     }
     res.sendStatus(200);
   } catch (err) {

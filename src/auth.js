@@ -29,6 +29,16 @@ export async function createUser(email, plainPassword, name = "") {
   }
 }
 
+export async function getUserByEmail(email) {
+  const db = await getDb();
+  const [rows] = await db.query(
+    "SELECT * FROM users WHERE lower(email) = lower(?) LIMIT 1",
+    [email.toLowerCase().trim()]
+  );
+  const user = rows[0];
+  return user ? safeUser(user) : null;
+}
+
 export async function loginUser(email, plainPassword) {
   const db = await getDb();
   const [rows] = await db.query(
@@ -53,6 +63,15 @@ export async function getUserById(id) {
   );
   const user = rows[0];
   return user ? safeUser(user) : null;
+}
+
+export async function updateUserPassword(userId, plainPassword) {
+  const hash = await hashPassword(plainPassword);
+  const db = await getDb();
+  await db.query(
+    "UPDATE users SET password_hash = ? WHERE id = ?",
+    [hash, userId]
+  );
 }
 
 function safeUser(user) {
