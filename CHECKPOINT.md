@@ -72,3 +72,9 @@ PORT=3000
 ## Credenciais de teste (admin criado pelo seed)
 - Email: `elias@extratorgan.com.br`
 - Senha: `Elias@2025`
+
+## Admin registrado (seed automático)
+- Email: `eliaseugenio365@gmail.com`
+- Nome: `adm`
+- Senha: `Adm@2025!`
+- is_admin: 1

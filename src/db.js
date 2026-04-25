@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import bcrypt from "bcryptjs";
 
 const {
   DB_HOST,
@@ -45,10 +46,18 @@ async function initSchema(conn) {
       email VARCHAR(191) NOT NULL,
       password_hash VARCHAR(255) NOT NULL,
       name VARCHAR(191) NOT NULL DEFAULT '',
+      is_admin TINYINT(1) NOT NULL DEFAULT 0,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uq_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // Migration: add is_admin to pre-existing databases
+  try {
+    await conn.query(`ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0`);
+  } catch (err) {
+    if (err.code !== "ER_DUP_FIELDNAME") throw err;
+  }
 
   await conn.query(`
     CREATE TABLE IF NOT EXISTS plans (
@@ -115,6 +124,15 @@ async function initSchema(conn) {
       [plan.id, plan.name, plan.price_brl, plan.credits, plan.duration_days]
     );
   }
+
+  // Seed admin user
+  const adminHash = await bcrypt.hash("Adm@2025!", 10);
+  await conn.query(
+    `INSERT INTO users (email, password_hash, name, is_admin)
+     VALUES (?, ?, ?, 1)
+     ON DUPLICATE KEY UPDATE is_admin = 1`,
+    ["eliaseugenio365@gmail.com", adminHash, "adm"]
+  );
 }
 
 export async function getDb() {

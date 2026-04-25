@@ -69,3 +69,15 @@ export function requireAuth(req, res, next) {
 export function requirePlan(req, res, next) {
   next();
 }
+
+export function requireAdmin(req, res, next) {
+  if (!req.session?.userId) {
+    if (req.accepts("html")) return res.redirect("/login");
+    return res.status(401).json({ ok: false, erro: "Login necessário." });
+  }
+  if (!req.user?.is_admin) {
+    if (req.accepts("html")) return res.status(403).send("Acesso negado.");
+    return res.status(403).json({ ok: false, erro: "Acesso negado." });
+  }
+  next();
+}
