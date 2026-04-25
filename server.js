@@ -916,9 +916,6 @@ function simHtml(user, plan, txId, csrfToken) {
 
 function checkoutHtml(user, plan, txId, csrfToken) {
   const amount = Number(plan.price_brl).toFixed(2);
-  const userEmail = esc(user.email || "");
-  const userName = esc(user.name || "");
-  const publicKey = esc(MP_PUBLIC_KEY);
 
   return shell("Finalizar pagamento", `
   <div class="page">
@@ -971,66 +968,22 @@ function checkoutHtml(user, plan, txId, csrfToken) {
         </section>
 
         <section id="cardPanel" hidden>
-          <div id="cardUnavailable" class="alert alert-warn" ${publicKey ? "hidden" : ""}>
-            MP_PUBLIC_KEY não configurada.
+          <div class="alert alert-warn" style="max-width:none;text-align:left">
+            Para pagar com cartão, você será redirecionado ao checkout seguro do Mercado Pago.
           </div>
-          <form id="form-checkout" ${publicKey ? "" : "hidden"}>
-            <div class="form-group">
-              <label>Número do cartão</label>
-              <div id="form-checkout__cardNumber" class="form-input" style="padding:11px 12px;height:auto"></div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div class="form-group">
-                <label>Validade</label>
-                <div id="form-checkout__expirationDate" class="form-input" style="padding:11px 12px;height:auto"></div>
-              </div>
-              <div class="form-group">
-                <label>CVV</label>
-                <div id="form-checkout__securityCode" class="form-input" style="padding:11px 12px;height:auto"></div>
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="form-checkout__cardholderName">Nome do titular</label>
-              <input class="form-input" type="text" id="form-checkout__cardholderName" value="${userName}">
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div class="form-group">
-                <label for="form-checkout__issuer">Banco emissor</label>
-                <select class="form-input" id="form-checkout__issuer"></select>
-              </div>
-              <div class="form-group">
-                <label for="form-checkout__installments">Parcelas</label>
-                <select class="form-input" id="form-checkout__installments"></select>
-              </div>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div class="form-group">
-                <label for="form-checkout__identificationType">Documento</label>
-                <select class="form-input" id="form-checkout__identificationType"></select>
-              </div>
-              <div class="form-group">
-                <label for="form-checkout__identificationNumber">Número</label>
-                <input class="form-input" type="text" id="form-checkout__identificationNumber" inputmode="numeric">
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="form-checkout__cardholderEmail">E-mail</label>
-              <input class="form-input" type="email" id="form-checkout__cardholderEmail" value="${userEmail}">
-            </div>
-            <button class="btn btn-primary" type="submit" id="form-checkout__submit">Pagar com cartão</button>
-            <progress value="0" class="progress-bar" style="width:100%;margin-top:12px"></progress>
+          <form method="POST" action="/pagamento/cartao-checkout/${esc(plan.id)}" style="margin-top:16px">
+            ${hiddenCsrfInput(csrfToken)}
+            <input type="hidden" name="txId" value="${esc(String(txId))}">
+            <button class="btn btn-primary" type="submit">Ir para checkout do Mercado Pago</button>
           </form>
         </section>
       </div>
     </div>
   </div>
-  <script src="https://sdk.mercadopago.com/js/v2"></script>
   <script>
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || "";
     const txId = ${Number(txId)};
     const planId = ${JSON.stringify(plan.id)};
-    const amount = ${JSON.stringify(amount)};
-    const mpPublicKey = ${JSON.stringify(MP_PUBLIC_KEY)};
     const pixPanel = document.getElementById("pixPanel");
     const cardPanel = document.getElementById("cardPanel");
     const tabPix = document.getElementById("tabPix");
@@ -1117,68 +1070,6 @@ function checkoutHtml(user, plan, txId, csrfToken) {
       }
     });
 
-    if (mpPublicKey) {
-      const mp = new MercadoPago(mpPublicKey);
-      const cardForm = mp.cardForm({
-        amount,
-        iframe: true,
-        form: {
-          id: "form-checkout",
-          cardNumber: { id: "form-checkout__cardNumber", placeholder: "Número do cartão" },
-          expirationDate: { id: "form-checkout__expirationDate", placeholder: "MM/AA" },
-          securityCode: { id: "form-checkout__securityCode", placeholder: "CVV" },
-          cardholderName: { id: "form-checkout__cardholderName", placeholder: "Titular do cartão" },
-          issuer: { id: "form-checkout__issuer", placeholder: "Banco emissor" },
-          installments: { id: "form-checkout__installments", placeholder: "Parcelas" },
-          identificationType: { id: "form-checkout__identificationType", placeholder: "Documento" },
-          identificationNumber: { id: "form-checkout__identificationNumber", placeholder: "Número do documento" },
-          cardholderEmail: { id: "form-checkout__cardholderEmail", placeholder: "E-mail" }
-        },
-        callbacks: {
-          onSubmit: async (event) => {
-            event.preventDefault();
-            setStatus("Processando pagamento com cartão...", "busy");
-            const submitButton = document.getElementById("form-checkout__submit");
-            submitButton.disabled = true;
-            try {
-              const payload = cardForm.getCardFormData();
-              const res = await fetch("/pagamento/transparente/cartao/" + planId, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-                body: JSON.stringify({
-                  txId,
-                  token: payload.token,
-                  issuer_id: payload.issuerId ? Number(payload.issuerId) : undefined,
-                  payment_method_id: payload.paymentMethodId,
-                  installments: Number(payload.installments),
-                  payer: {
-                    email: payload.cardholderEmail,
-                    identificationType: payload.identificationType,
-                    identificationNumber: payload.identificationNumber,
-                    name: document.getElementById("form-checkout__cardholderName").value
-                  }
-                })
-              });
-              const data = await parseJsonResponse(res);
-              if (data.approved) {
-                window.location.href = "/pagamento/sucesso";
-                return;
-              }
-              setStatus("Pagamento criado com status " + data.status + ".", data.status === "pending" ? "busy" : "error");
-            } catch (error) {
-              setStatus(error.message, "error");
-            } finally {
-              submitButton.disabled = false;
-            }
-          },
-          onFetching: () => {
-            const progressBar = document.querySelector(".progress-bar");
-            progressBar.removeAttribute("value");
-            return () => progressBar.setAttribute("value", "0");
-          }
-        }
-      });
-    }
   </script>`, user, null, csrfToken);
 }
 
@@ -1346,6 +1237,38 @@ async function createRecurringCheckout(plan, user, txId) {
   }
 
   await updateTransactionStatus(txId, response.status || "pending", String(response.id || ""));
+  return response;
+}
+
+async function createHostedCheckoutPreference(plan, user, txId) {
+  const response = await mercadoPagoRequest("/checkout/preferences", {
+    method: "POST",
+    body: {
+      items: [{
+        title: `Extrator GAN - ${plan.name}`,
+        quantity: 1,
+        unit_price: Number(plan.price_brl),
+        currency_id: "BRL",
+      }],
+      payer: {
+        name: user.name || undefined,
+        email: user.email,
+      },
+      external_reference: String(txId),
+      back_urls: {
+        success: `${BASE_URL}/pagamento/sucesso`,
+        failure: `${BASE_URL}/pagamento/falha`,
+        pending: `${BASE_URL}/pagamento/pendente`,
+      },
+      auto_return: "approved",
+      notification_url: buildNotificationUrl(),
+    },
+  });
+
+  if (!response?.init_point) {
+    throw new Error("Mercado Pago nao retornou link de checkout.");
+  }
+
   return response;
 }
 
@@ -1631,6 +1554,30 @@ app.get("/checkout/:planId", requireAuth, asyncHandler(async (req, res) => {
     return res.redirect(`/pagamento/simulacao/${plan.id}?txId=${txId}`);
   }
   return res.type("html").send(checkoutHtml(req.user, plan, txId, req.csrfTokenValue));
+}));
+
+app.post("/pagamento/cartao-checkout/:planId", requireAuth, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  if (!mpClient) {
+    return res.redirect(`/pagamento/simulacao/${req.params.planId}?txId=${Number(req.body?.txId) || ""}`);
+  }
+
+  const plan = await getPlanById(req.params.planId);
+  const txId = Number(req.body?.txId);
+  const tx = await getTransactionById(txId);
+  if (!plan || !tx || Number(tx.user_id) !== Number(req.user.id) || String(tx.plan_id) !== String(plan.id)) {
+    return res.redirect("/planos?erro=Transacao+invalida");
+  }
+  if (tx.status === "approved") {
+    return res.redirect("/pagamento/sucesso");
+  }
+
+  try {
+    const pref = await createHostedCheckoutPreference(plan, req.user, txId);
+    return res.redirect(pref.init_point);
+  } catch (err) {
+    console.error("MP hosted checkout error", err);
+    return res.redirect("/planos?erro=Erro+ao+iniciar+checkout");
+  }
 }));
 
 app.post("/pagamento/transparente/pix/:planId", requireAuth, paymentLimiter, requireCsrf, asyncHandler(async (req, res) => {
