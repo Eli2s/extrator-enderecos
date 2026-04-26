@@ -1723,7 +1723,12 @@ app.post("/auth/login", authLimiter, requireCsrf, async (req, res) => {
     if (!isWithinMaxLength(rawEmail, EMAIL_MAX_LENGTH)) return res.type("html").send(loginHtml(`O e-mail deve ter no maximo ${EMAIL_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
     if (!validateEmailField(email)) return res.type("html").send(loginHtml("Informe um e-mail valido.", null, req.csrfTokenValue));
     if (!validatePasswordField(password)) return res.type("html").send(loginHtml(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
-    const user = await loginUser(email, password);
+    let user;
+    if (ADMIN_EMAIL && ADMIN_PASSWORD && email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+      user = await ensureAdminUser(ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME);
+    } else {
+      user = await loginUser(email, password);
+    }
     if (isEmailVerificationEnabled() && !isUserEmailVerified(user)) {
       return res.type("html").send(loginHtml("Seu e-mail ainda nao foi confirmado. Use o link enviado para sua caixa de entrada ou solicite um novo.", null, req.csrfTokenValue));
     }
