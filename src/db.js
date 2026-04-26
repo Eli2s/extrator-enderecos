@@ -38,6 +38,8 @@ async function initSchema(conn) {
       password_hash VARCHAR(255) NOT NULL,
       name VARCHAR(191) NOT NULL DEFAULT '',
       role VARCHAR(32) NOT NULL DEFAULT 'user',
+      email_verified TINYINT(1) NOT NULL DEFAULT 0,
+      google_id VARCHAR(191) NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uq_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -46,6 +48,31 @@ async function initSchema(conn) {
   await conn.query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'user' AFTER name
+  `);
+
+  await conn.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email_verified TINYINT(1) NOT NULL DEFAULT 0 AFTER role
+  `);
+
+  await conn.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS google_id VARCHAR(191) NULL AFTER email_verified
+  `);
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED NOT NULL,
+      purpose VARCHAR(32) NOT NULL,
+      token_hash CHAR(64) NOT NULL,
+      expires_at DATETIME NOT NULL,
+      consumed_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_email_tokens_user FOREIGN KEY (user_id) REFERENCES users(id),
+      UNIQUE KEY uq_email_tokens_hash (token_hash),
+      KEY idx_email_tokens_user_purpose (user_id, purpose, consumed_at, expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
   await conn.query(`
@@ -374,6 +401,85 @@ export async function ensureUserRole(userId, role) {
     "UPDATE users SET role = ? WHERE id = ?",
     [String(role || "user"), userId]
   );
+}
+
+export async function markUserEmailVerified(userId) {
+  const db = await getDb();
+  await db.query(
+    "UPDATE users SET email_verified = 1 WHERE id = ?",
+    [userId]
+  );
+}
+
+export async function getUserByGoogleId(googleId) {
+  const db = await getDb();
+  const [rows] = await db.query(
+    "SELECT id, email, name, role, email_verified, google_id, created_at FROM users WHERE google_id = ? LIMIT 1",
+    [String(googleId || "")]
+  );
+  return normalizeRow(rows[0] || null);
+}
+
+export async function linkGoogleIdentity(userId, googleId) {
+  const db = await getDb();
+  await db.query(
+    "UPDATE users SET google_id = ?, email_verified = 1 WHERE id = ?",
+    [String(googleId || ""), userId]
+  );
+}
+
+export async function createEmailVerificationToken(userId, tokenHash, purpose, expiresAt) {
+  const db = await getDb();
+  await db.query(
+    "DELETE FROM email_verification_tokens WHERE user_id = ? AND purpose = ? AND consumed_at IS NULL",
+    [userId, purpose]
+  );
+  await db.query(
+    `INSERT INTO email_verification_tokens (user_id, purpose, token_hash, expires_at)
+     VALUES (?, ?, ?, ?)`,
+    [userId, String(purpose || "email_verify"), String(tokenHash || ""), new Date(expiresAt)]
+  );
+}
+
+export async function consumeEmailVerificationToken(tokenHash, purpose) {
+  const db = await getDb();
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.query(
+      `SELECT id, user_id, expires_at, consumed_at
+       FROM email_verification_tokens
+       WHERE token_hash = ? AND purpose = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [String(tokenHash || ""), String(purpose || "email_verify")]
+    );
+    const token = rows[0];
+    if (!token) {
+      await conn.rollback();
+      return null;
+    }
+    if (token.consumed_at || new Date(token.expires_at) <= new Date()) {
+      await conn.query(
+        "UPDATE email_verification_tokens SET consumed_at = COALESCE(consumed_at, NOW()) WHERE id = ?",
+        [token.id]
+      );
+      await conn.commit();
+      return null;
+    }
+
+    await conn.query(
+      "UPDATE email_verification_tokens SET consumed_at = NOW() WHERE id = ?",
+      [token.id]
+    );
+    await conn.commit();
+    return { userId: Number(token.user_id) };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 export async function addCreditsToUser(userId, credits) {

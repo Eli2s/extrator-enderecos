@@ -27,8 +27,12 @@ import {
   listUsersForAdmin,
   addCreditsToUser,
   deleteUserForAdmin,
+  createEmailVerificationToken,
+  consumeEmailVerificationToken,
+  markUserEmailVerified,
 } from "./src/db.js";
-import { createUser, ensureAdminUser, getUserByEmail, loginUser, getUserById, requireAdmin, requireAuth, updateUserPassword } from "./src/auth.js";
+import { createOrLinkGoogleUser, createUser, ensureAdminUser, getUserByEmail, loginUser, getUserById, requireAdmin, requireAuth, updateUserPassword } from "./src/auth.js";
+import { isMailerConfigured, sendMail } from "./src/mailer.js";
 import {
   CPF_LENGTH,
   DOWNLOAD_NAME_MAX_LENGTH,
@@ -175,6 +179,10 @@ const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 const ADMIN_EMAIL = normalizeEmailAddress(process.env.ADMIN_EMAIL || "");
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const ADMIN_NAME = normalizeTextField(process.env.ADMIN_NAME || "Administrador", NAME_MAX_LENGTH);
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = `${BASE_URL}/auth/google/callback`;
+const EMAIL_VERIFICATION_TOKEN_TTL_MS = Number(process.env.EMAIL_VERIFICATION_TOKEN_TTL_MS || 30 * 60 * 1000);
 const mpClient = MP_TOKEN ? new MercadoPagoConfig({ accessToken: MP_TOKEN }) : null;
 assertServerConfig();
 
@@ -206,6 +214,14 @@ function assertServerConfig() {
 
   if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
     console.warn("ADMIN_EMAIL ou ADMIN_PASSWORD nao configurados; painel admin desabilitado.");
+  }
+
+  if (!isMailerConfigured()) {
+    console.warn("SMTP nao configurado; verificacao real de e-mail ficara desabilitada.");
+  }
+
+  if ((GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_SECRET) || (!GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET)) {
+    console.warn("Google OAuth incompleto; configure GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET juntos.");
   }
 }
 
@@ -723,10 +739,12 @@ function loginHtml(error, ok, csrfToken) {
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Entrar</button>
       </form>
+      ${isGoogleAuthConfigured() ? `<a class="btn btn-outline" href="/auth/google" style="justify-content:center;display:flex;width:100%;margin-top:12px">Entrar com Google</a>` : ""}
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">
         <a class="btn btn-outline" href="/register" style="justify-content:center;flex:1">Criar conta</a>
         <a class="btn btn-outline" href="/planos" style="justify-content:center;flex:1">Comprar sem login</a>
       </div>
+      <p class="form-foot"><a href="/verificar-email/reenviar">Reenviar e-mail de confirmação</a></p>
     </div>
   </div>`, null, null, csrfToken);
 }
@@ -755,7 +773,46 @@ function registerHtml(error, csrfToken) {
         </div>
         <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Criar conta</button>
       </form>
+      ${isGoogleAuthConfigured() ? `<a class="btn btn-outline" href="/auth/google" style="justify-content:center;display:flex;width:100%;margin-top:12px">Criar conta com Google</a>` : ""}
       <p class="form-foot">Já tem conta? <a href="/login">Entrar</a></p>
+    </div>
+  </div>`, null, null, csrfToken);
+}
+
+function verifyEmailNoticeHtml(user, error, ok, csrfToken) {
+  return shell("Verificar e-mail", `
+  <div class="form-page">
+    <div class="form-card" style="max-width:460px">
+      <h1>Verifique seu e-mail</h1>
+      <p class="sub">Confirme o endereço <strong>${esc(user.email)}</strong> para liberar login por senha com segurança.</p>
+      ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
+      ${ok ? `<div class="form-ok">${esc(ok)}</div>` : ""}
+      <form method="POST" action="/auth/verify-email/resend">
+        ${hiddenCsrfInput(csrfToken)}
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Reenviar link de confirmação</button>
+      </form>
+      <p class="form-foot">Se preferir, você também pode entrar com Google quando essa opção estiver habilitada.</p>
+    </div>
+  </div>`, user, null, csrfToken);
+}
+
+function verifyEmailResendHtml(error, ok, csrfToken, email = "") {
+  return shell("Reenviar confirmação", `
+  <div class="form-page">
+    <div class="form-card" style="max-width:460px">
+      <h1>Reenviar confirmação</h1>
+      <p class="sub">Informe seu e-mail. Se a conta existir e ainda não estiver confirmada, vamos enviar um novo link.</p>
+      ${error ? `<div class="form-error">${esc(error)}</div>` : ""}
+      ${ok ? `<div class="form-ok">${esc(ok)}</div>` : ""}
+      <form method="POST" action="/verificar-email/reenviar">
+        ${hiddenCsrfInput(csrfToken)}
+        <div class="form-group">
+          <label for="email">E-mail</label>
+          <input class="form-input" type="email" id="email" name="email" required autocomplete="email" maxlength="${EMAIL_MAX_LENGTH}" value="${esc(email)}">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center">Enviar link</button>
+      </form>
+      <p class="form-foot"><a href="/login">Voltar ao login</a></p>
     </div>
   </div>`, null, null, csrfToken);
 }
@@ -1260,6 +1317,89 @@ function validatePasswordField(password) {
   return isValidPasswordLength(password);
 }
 
+function isEmailVerificationEnabled() {
+  return isMailerConfigured();
+}
+
+function isGoogleAuthConfigured() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+async function issueEmailVerification(user) {
+  if (!user?.id || !user?.email || !isEmailVerificationEnabled()) return false;
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = sha256Hex(token);
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TOKEN_TTL_MS);
+  await createEmailVerificationToken(user.id, tokenHash, "email_verify", expiresAt);
+  const verifyUrl = `${BASE_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
+  await sendMail({
+    to: user.email,
+    subject: "Confirme seu e-mail no Extrator GAN",
+    text: `Confirme seu e-mail abrindo este link: ${verifyUrl}`,
+    html: `<p>Confirme seu e-mail no <strong>Extrator GAN</strong>.</p><p><a href="${esc(verifyUrl)}">Confirmar e-mail</a></p><p>Se o botao nao abrir, use este link:</p><p>${esc(verifyUrl)}</p>`,
+  });
+  return true;
+}
+
+function isUserEmailVerified(user) {
+  return Boolean(user?.email_verified) || user?.role === "admin";
+}
+
+function buildGoogleAuthUrl(req) {
+  const state = crypto.randomBytes(24).toString("hex");
+  req.session.googleOAuthState = state;
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+    access_type: "offline",
+    prompt: "select_account",
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function exchangeGoogleCodeForProfile(code) {
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code: String(code || ""),
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: GOOGLE_REDIRECT_URI,
+      grant_type: "authorization_code",
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    throw new Error("Falha ao autenticar com Google.");
+  }
+
+  const tokenBody = await tokenRes.json();
+  const userInfoRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: {
+      Authorization: `Bearer ${tokenBody.access_token}`,
+    },
+  });
+
+  if (!userInfoRes.ok) {
+    throw new Error("Falha ao obter dados do Google.");
+  }
+
+  const profile = await userInfoRes.json();
+  if (!profile?.sub || !profile?.email || profile?.email_verified !== true) {
+    throw new Error("A conta Google precisa ter e-mail verificado.");
+  }
+
+  return profile;
+}
+
 async function initializeAdminUser() {
   if (!ADMIN_EMAIL || !ADMIN_PASSWORD) return null;
   return ensureAdminUser(ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME);
@@ -1476,6 +1616,104 @@ app.get("/login", (req, res) => {
   res.type("html").send(loginHtml(req.query.erro, req.query.ok, req.csrfTokenValue));
 });
 
+app.get("/verificar-email", requireAuth, (req, res) => {
+  if (isUserEmailVerified(req.user)) {
+    return res.redirect(req.query.next || "/");
+  }
+  return res.type("html").send(verifyEmailNoticeHtml(req.user, req.query.erro, req.query.ok, req.csrfTokenValue));
+});
+
+app.get("/verificar-email/reenviar", (req, res) => {
+  if (req.user && isUserEmailVerified(req.user)) {
+    return res.redirect("/");
+  }
+  res.type("html").send(verifyEmailResendHtml(null, req.query.ok, req.csrfTokenValue, ""));
+});
+
+app.post("/verificar-email/reenviar", authLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  const rawEmail = req.body?.email;
+  const email = normalizeEmailAddress(rawEmail);
+  if (!isWithinMaxLength(rawEmail, EMAIL_MAX_LENGTH) || !validateEmailField(email)) {
+    return res.type("html").send(verifyEmailResendHtml("Informe um e-mail valido.", null, req.csrfTokenValue, email));
+  }
+
+  if (!isEmailVerificationEnabled()) {
+    return res.type("html").send(verifyEmailResendHtml("A verificacao por e-mail ainda nao esta configurada no servidor.", null, req.csrfTokenValue, email));
+  }
+
+  const user = await getUserByEmail(email);
+  if (user && !isUserEmailVerified(user)) {
+    await issueEmailVerification(user);
+  }
+
+  return res.type("html").send(verifyEmailResendHtml(null, "Se a conta existir, um novo link foi enviado.", req.csrfTokenValue, email));
+}));
+
+app.post("/auth/verify-email/resend", requireAuth, authLimiter, requireCsrf, asyncHandler(async (req, res) => {
+  if (isUserEmailVerified(req.user)) {
+    return res.redirect("/verificar-email?ok=E-mail+ja+confirmado");
+  }
+  if (!isEmailVerificationEnabled()) {
+    return res.redirect("/verificar-email?erro=Verificacao+por+e-mail+nao+esta+habilitada");
+  }
+  await issueEmailVerification(req.user);
+  return res.redirect("/verificar-email?ok=Enviamos+um+novo+link+de+confirmacao");
+}));
+
+app.get("/auth/verify-email", asyncHandler(async (req, res) => {
+  const token = normalizeTextField(req.query?.token, 128);
+  if (!token) {
+    return res.redirect("/login?erro=Link+de+verificacao+invalido");
+  }
+
+  const consumed = await consumeEmailVerificationToken(sha256Hex(token), "email_verify");
+  if (!consumed?.userId) {
+    return res.redirect("/login?erro=Link+de+verificacao+invalido+ou+expirado");
+  }
+
+  await markUserEmailVerified(consumed.userId);
+  if (req.session?.userId && Number(req.session.userId) === Number(consumed.userId)) {
+    req.user = await getUserById(consumed.userId);
+  }
+  return res.redirect("/login?ok=E-mail+confirmado+com+sucesso");
+}));
+
+app.get("/auth/google", asyncHandler(async (req, res) => {
+  if (!isGoogleAuthConfigured()) {
+    return res.redirect("/login?erro=Login+com+Google+nao+esta+configurado");
+  }
+  res.redirect(buildGoogleAuthUrl(req));
+}));
+
+app.get("/auth/google/callback", asyncHandler(async (req, res) => {
+  if (!isGoogleAuthConfigured()) {
+    return res.redirect("/login?erro=Login+com+Google+nao+esta+configurado");
+  }
+
+  const state = String(req.query?.state || "");
+  const expectedState = String(req.session?.googleOAuthState || "");
+  delete req.session.googleOAuthState;
+
+  if (!safeTokenEquals(expectedState, state)) {
+    return res.redirect("/login?erro=Falha+na+validacao+do+Google");
+  }
+
+  const code = String(req.query?.code || "");
+  if (!code) {
+    return res.redirect("/login?erro=Google+nao+retornou+codigo+de+acesso");
+  }
+
+  const profile = await exchangeGoogleCodeForProfile(code);
+  const user = await createOrLinkGoogleUser({
+    googleId: profile.sub,
+    email: profile.email,
+    name: profile.name || profile.given_name || profile.email,
+  });
+  await establishUserSession(req, user.id);
+  const sub = await getActiveSubscription(user.id);
+  return res.redirect(sub ? "/" : "/planos");
+}));
+
 app.post("/auth/login", authLimiter, requireCsrf, async (req, res) => {
   try {
     const rawEmail = req.body?.email;
@@ -1486,6 +1724,9 @@ app.post("/auth/login", authLimiter, requireCsrf, async (req, res) => {
     if (!validateEmailField(email)) return res.type("html").send(loginHtml("Informe um e-mail valido.", null, req.csrfTokenValue));
     if (!validatePasswordField(password)) return res.type("html").send(loginHtml(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, null, req.csrfTokenValue));
     const user = await loginUser(email, password);
+    if (isEmailVerificationEnabled() && !isUserEmailVerified(user)) {
+      return res.type("html").send(loginHtml("Seu e-mail ainda nao foi confirmado. Use o link enviado para sua caixa de entrada ou solicite um novo.", null, req.csrfTokenValue));
+    }
     await establishUserSession(req, user.id);
     const sub = await getActiveSubscription(user.id);
     res.redirect(sub ? "/" : "/planos");
@@ -1513,6 +1754,15 @@ app.post("/auth/register", authLimiter, requireCsrf, async (req, res) => {
     if (!validatePasswordField(password)) return res.type("html").send(registerHtml(`A senha deve ter entre ${PASSWORD_MIN_LENGTH} e ${PASSWORD_MAX_LENGTH} caracteres.`, req.csrfTokenValue));
     const user = await createUser(email, password, name);
     await establishUserSession(req, user.id);
+    if (isEmailVerificationEnabled()) {
+      try {
+        await issueEmailVerification(user);
+        return res.redirect("/verificar-email?ok=Enviamos+um+link+de+confirmacao");
+      } catch (mailErr) {
+        console.error("Falha ao enviar verificacao de e-mail", mailErr);
+        return res.redirect("/verificar-email?erro=Conta+criada,+mas+nao+foi+possivel+enviar+o+e-mail+agora");
+      }
+    }
     res.redirect("/planos");
   } catch (err) {
     res.type("html").send(registerHtml(err.message, req.csrfTokenValue));
@@ -1606,6 +1856,13 @@ app.post("/checkout-convidado/:planId", authLimiter, paymentLimiter, requireCsrf
   const user = await createUser(email, generatedPassword, name);
   await establishUserSession(req, user.id);
   req.session.guestCheckout = true;
+  if (isEmailVerificationEnabled()) {
+    try {
+      await issueEmailVerification(user);
+    } catch (mailErr) {
+      console.error("Falha ao enviar verificacao de e-mail no checkout convidado", mailErr);
+    }
+  }
 
   const txId = await createTransaction(user.id, plan.id, plan.price_brl);
   if (mpClient && isRecurringPlan(plan)) {

@@ -32,6 +32,18 @@ MP_ACCESS_TOKEN=
 MP_PUBLIC_KEY=
 MP_WEBHOOK_SECRET=
 MP_WEBHOOK_TOLERANCE_MS=300000
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASSWORD=
+MAIL_FROM=
+EMAIL_VERIFICATION_TOKEN_TTL_MS=1800000
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+ADMIN_NAME=Administrador
+ADMIN_EMAIL=admin@seu-dominio.com
+ADMIN_PASSWORD=troque-por-uma-senha-admin-forte
 ```
 
 ## Rodar localmente
@@ -73,6 +85,8 @@ O app cria as tabelas automaticamente no primeiro boot:
 - Com `MP_ACCESS_TOKEN` e `MP_PUBLIC_KEY`, o app usa Checkout Transparente com Pix e cartao.
 - Com `MP_ACCESS_TOKEN`, configure tambem `MP_WEBHOOK_SECRET` para validar `x-signature` no webhook.
 - Em producao, use `BASE_URL` com `https://`.
+- Com SMTP configurado, o app envia link de confirmacao de e-mail.
+- Com `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET`, o login com Google fica disponivel.
 
 ## Checklist de Producao
 

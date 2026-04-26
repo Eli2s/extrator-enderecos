@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import { ensureUserRole, getDb } from "./db.js";
+import { ensureUserRole, getDb, getUserByGoogleId, linkGoogleIdentity, markUserEmailVerified } from "./db.js";
 import {
   EMAIL_MAX_LENGTH,
   NAME_MAX_LENGTH,
@@ -21,9 +21,12 @@ export async function verifyPassword(plain, hash) {
   return bcrypt.compare(plain, hash);
 }
 
-export async function createUser(email, plainPassword, name = "", role = "user") {
+export async function createUser(email, plainPassword, name = "", role = "user", options = {}) {
   const normalizedEmail = normalizeEmailAddress(email);
   const normalizedName = normalizeTextInput(name, NAME_MAX_LENGTH);
+  const safeRole = role === "admin" ? "admin" : "user";
+  const emailVerified = options.emailVerified ? 1 : 0;
+  const googleId = options.googleId ? String(options.googleId).slice(0, 191) : null;
   if (!normalizedName) {
     throw Object.assign(new Error("Informe seu nome."), { status: 400 });
   }
@@ -39,8 +42,8 @@ export async function createUser(email, plainPassword, name = "", role = "user")
 
   try {
     const [result] = await db.query(
-      "INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)",
-      [normalizedEmail.slice(0, EMAIL_MAX_LENGTH), hash, normalizedName, role === "admin" ? "admin" : "user"]
+      "INSERT INTO users (email, password_hash, name, role, email_verified, google_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [normalizedEmail.slice(0, EMAIL_MAX_LENGTH), hash, normalizedName, safeRole, emailVerified, googleId]
     );
     return getUserById(result.insertId);
   } catch (err) {
@@ -105,6 +108,39 @@ export async function updateUserPassword(userId, plainPassword) {
     "UPDATE users SET password_hash = ? WHERE id = ?",
     [hash, userId]
   );
+}
+
+export async function createOrLinkGoogleUser({ googleId, email, name }) {
+  const normalizedEmail = normalizeEmailAddress(email);
+  const normalizedName = normalizeTextInput(name || "Conta Google", NAME_MAX_LENGTH);
+  if (!googleId || !normalizedEmail || !isValidEmail(normalizedEmail)) {
+    throw Object.assign(new Error("Dados do Google invalidos."), { status: 400 });
+  }
+
+  const existingByGoogle = await getUserByGoogleId(googleId);
+  if (existingByGoogle) {
+    if (!existingByGoogle.email_verified) {
+      await markUserEmailVerified(existingByGoogle.id);
+    }
+    return getUserById(existingByGoogle.id);
+  }
+
+  const existingByEmail = await getUserByEmail(normalizedEmail);
+  if (existingByEmail) {
+    await linkGoogleIdentity(existingByEmail.id, googleId);
+    const db = await getDb();
+    await db.query(
+      "UPDATE users SET name = COALESCE(NULLIF(name, ''), ?) WHERE id = ?",
+      [normalizedName, existingByEmail.id]
+    );
+    return getUserById(existingByEmail.id);
+  }
+
+  const generatedPassword = `${googleId}:${Date.now()}:${Math.random()}`;
+  return createUser(normalizedEmail, generatedPassword, normalizedName, "user", {
+    emailVerified: true,
+    googleId,
+  });
 }
 
 export async function ensureAdminUser(email, plainPassword, name = "Administrador") {
